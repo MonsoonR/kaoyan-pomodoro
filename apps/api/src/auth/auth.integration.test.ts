@@ -71,6 +71,25 @@ describe('authentication API', () => {
     expect(
       database.sqlite.prepare('select count(*) n from settings').get(),
     ).toEqual({ n: 1 });
+    const initialChange = database.sqlite
+      .prepare(
+        'select entity_type,version,change_type,payload from sync_changes',
+      )
+      .get() as {
+      entity_type: string;
+      version: number;
+      change_type: string;
+      payload: string;
+    };
+    expect(initialChange).toMatchObject({
+      entity_type: 'settings',
+      version: 1,
+      change_type: 'upsert',
+    });
+    expect(JSON.parse(initialChange.payload)).toMatchObject({
+      defaultPreset: '50-10',
+      version: 1,
+    });
   });
   it('rejects a second account initialization', async () => {
     await expect(
@@ -80,6 +99,36 @@ describe('authentication API', () => {
         TEST_PASSWORD_OPTIONS,
       ),
     ).rejects.toThrow('already initialized');
+  });
+  it('rolls back user and settings when the initial settings change fails', async () => {
+    const isolatedDirectory = mkdtempSync(
+      join(tmpdir(), 'kaoyan-init-rollback-'),
+    );
+    const isolated = openDatabase(join(isolatedDirectory, 'test.sqlite'));
+    try {
+      migrateDatabase(isolated.db);
+      isolated.sqlite.exec(`
+        CREATE TRIGGER fail_initial_change
+        BEFORE INSERT ON sync_changes
+        BEGIN SELECT RAISE(ABORT, 'change failed'); END;
+      `);
+      await expect(
+        initializeAccount(
+          isolated.sqlite,
+          { username: 'learner', password, confirmPassword: password },
+          TEST_PASSWORD_OPTIONS,
+        ),
+      ).rejects.toThrow('change failed');
+      expect(
+        isolated.sqlite.prepare('select count(*) n from users').get(),
+      ).toEqual({ n: 0 });
+      expect(
+        isolated.sqlite.prepare('select count(*) n from settings').get(),
+      ).toEqual({ n: 0 });
+    } finally {
+      isolated.close();
+      rmSync(isolatedDirectory, { recursive: true, force: true });
+    }
   });
   it('logs in and stores only the token hash with a secure thirty-day cookie', async () => {
     const response = await login();
@@ -235,6 +284,9 @@ describe('authentication API', () => {
           .get() as CountResult
       ).n,
     ).toBe(0);
+    expect(
+      database.sqlite.prepare('select count(*) n from sync_changes').get(),
+    ).toEqual({ n: 1 });
   });
   it('enforces exact origin and JSON on writes but not reads', async () => {
     expect(

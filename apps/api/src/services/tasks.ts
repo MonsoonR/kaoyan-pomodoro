@@ -204,5 +204,9 @@ export function createTaskService(deps: ServiceDependencies) {
       const row = getCurrent(userId, id);
       return row && row.deleted_at === null ? serialize(row) : null;
     },
+    getAny(userId: string, id: string) {
+      const row = getCurrent(userId, id);
+      return row ? serialize(row) : null;
+    },
   };
 }

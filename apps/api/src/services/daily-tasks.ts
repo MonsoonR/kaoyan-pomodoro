@@ -231,5 +231,9 @@ export function createDailyTaskService(deps: ServiceDependencies) {
         return finish(u, id, n, 'delete');
       })();
     },
+    getAny(u: string, id: string) {
+      const row = get(u, id);
+      return row ? serialize(row) : null;
+    },
   };
 }

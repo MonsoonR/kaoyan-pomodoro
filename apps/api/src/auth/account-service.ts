@@ -1,31 +1,94 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { LoginRequestSchema, PasswordSchema, UsernameSchema } from '@kaoyan/contracts';
-import { hashPassword, type PasswordOptions, PRODUCTION_PASSWORD_OPTIONS } from './password';
+import {
+  LoginRequestSchema,
+  PasswordSchema,
+  SettingsSchema,
+  UsernameSchema,
+} from '@kaoyan/contracts';
+import {
+  hashPassword,
+  type PasswordOptions,
+  PRODUCTION_PASSWORD_OPTIONS,
+} from './password';
 
-export async function initializeAccount(sqlite: Database.Database, input: { username: string; password: string; confirmPassword: string }, options: PasswordOptions = PRODUCTION_PASSWORD_OPTIONS) {
+export async function initializeAccount(
+  sqlite: Database.Database,
+  input: { username: string; password: string; confirmPassword: string },
+  options: PasswordOptions = PRODUCTION_PASSWORD_OPTIONS,
+) {
   const username = UsernameSchema.parse(input.username);
   const password = PasswordSchema.parse(input.password);
-  if (password !== input.confirmPassword) throw new Error('Passwords do not match');
-  if (sqlite.prepare('select 1 from users limit 1').get()) throw new Error('Account already initialized');
+  if (password !== input.confirmPassword)
+    throw new Error('Passwords do not match');
+  if (sqlite.prepare('select 1 from users limit 1').get())
+    throw new Error('Account already initialized');
   const passwordHash = await hashPassword(password, options);
-  const now = Date.now(); const userId = randomUUID();
+  const now = Date.now();
+  const userId = randomUUID();
+  const settingsId = randomUUID();
+  const settingsPayload = SettingsSchema.parse({
+    id: settingsId,
+    defaultPreset: '50-10',
+    customFocusMinutes: 40,
+    customShortBreakMinutes: 8,
+    customLongBreakMinutes: 20,
+    longBreakInterval: 4,
+    soundEnabled: true,
+    notificationsEnabled: false,
+    version: 1,
+    createdAt: new Date(now).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+    deletedAt: null,
+  });
   sqlite.transaction(() => {
-    sqlite.prepare('insert into users (id,singleton_key,username,password_hash,password_changed_at,created_at,updated_at) values (?,1,?,?,?,?,?)').run(userId, username, passwordHash, now, now, now);
-    sqlite.prepare('insert into settings (id,user_id,created_at,updated_at) values (?,?,?,?)').run(randomUUID(), userId, now, now);
+    sqlite
+      .prepare(
+        'insert into users (id,singleton_key,username,password_hash,password_changed_at,created_at,updated_at) values (?,1,?,?,?,?,?)',
+      )
+      .run(userId, username, passwordHash, now, now, now);
+    sqlite
+      .prepare(
+        'insert into settings (id,user_id,created_at,updated_at) values (?,?,?,?)',
+      )
+      .run(settingsId, userId, now, now);
+    sqlite
+      .prepare(
+        `insert into sync_changes (user_id,entity_type,entity_id,version,change_type,payload,changed_at) values (?,'settings',?,1,'upsert',?,?)`,
+      )
+      .run(userId, settingsId, JSON.stringify(settingsPayload), now);
   })();
   return { id: userId, username };
 }
 
-export async function resetAccountPassword(sqlite: Database.Database, password: string, confirmPassword: string, options: PasswordOptions = PRODUCTION_PASSWORD_OPTIONS) {
-  PasswordSchema.parse(password); if (password !== confirmPassword) throw new Error('Passwords do not match');
-  const user = sqlite.prepare('select id from users limit 1').get() as { id: string } | undefined;
+export async function resetAccountPassword(
+  sqlite: Database.Database,
+  password: string,
+  confirmPassword: string,
+  options: PasswordOptions = PRODUCTION_PASSWORD_OPTIONS,
+) {
+  PasswordSchema.parse(password);
+  if (password !== confirmPassword) throw new Error('Passwords do not match');
+  const user = sqlite.prepare('select id from users limit 1').get() as
+    | { id: string }
+    | undefined;
   if (!user) throw new Error('Account is not initialized');
-  const hash = await hashPassword(password, options); const now = Date.now();
+  const hash = await hashPassword(password, options);
+  const now = Date.now();
   sqlite.transaction(() => {
-    sqlite.prepare('update users set password_hash=?,password_changed_at=?,updated_at=?,failed_login_count=0,last_failed_login_at=null,locked_until=null where id=?').run(hash, now, now, user.id);
-    sqlite.prepare('update sessions set revoked_at=? where user_id=? and revoked_at is null').run(now, user.id);
+    sqlite
+      .prepare(
+        'update users set password_hash=?,password_changed_at=?,updated_at=?,failed_login_count=0,last_failed_login_at=null,locked_until=null where id=?',
+      )
+      .run(hash, now, now, user.id);
+    sqlite
+      .prepare(
+        'update sessions set revoked_at=? where user_id=? and revoked_at is null',
+      )
+      .run(now, user.id);
   })();
 }
 
-export function validateLogin(input: unknown) { return LoginRequestSchema.parse(input); }
+export function validateLogin(input: unknown) {
+  return LoginRequestSchema.parse(input);
+}

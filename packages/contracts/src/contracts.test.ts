@@ -11,6 +11,7 @@ import {
   ActiveTimerSchema,
   EntityVersionSchema,
   OperationReceiptSchema,
+  ConflictSchema,
   SyncChangeSchema,
   SyncOperationSchema,
 } from './index';
@@ -278,5 +279,45 @@ describe('synchronization payload schemas', () => {
         conflictId: entityId,
       }),
     ).toThrow();
+  });
+
+  it('strictly validates Task 5 receipts and conflicts', () => {
+    expect(
+      OperationReceiptSchema.parse({
+        operationId,
+        status: 'applied',
+        entityVersion: 1,
+        conflictId: null,
+        errorCode: null,
+        errorMessage: null,
+      }).status,
+    ).toBe('applied');
+    expect(() =>
+      OperationReceiptSchema.parse({
+        operationId,
+        status: 'rejected',
+        entityVersion: null,
+        conflictId: null,
+        errorCode: null,
+        errorMessage: null,
+      }),
+    ).toThrow();
+    expect(
+      ConflictSchema.parse({
+        id: entityId,
+        entityType: 'task',
+        entityId,
+        conflictType: 'delete_modify',
+        localOperationId: operationId,
+        baseVersion: 1,
+        serverVersion: 2,
+        localPayload: {},
+        serverPayload: { id: entityId },
+        status: 'open',
+        resolution: null,
+        createdAt: timestamp,
+        resolvedAt: null,
+      }).status,
+    ).toBe('open');
   });
 });

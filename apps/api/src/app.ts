@@ -17,6 +17,8 @@ import { migrateDatabase } from './db/migrate';
 import { authRoutes } from './routes/auth';
 import { deviceRoutes } from './routes/devices';
 import { studyDataRoutes } from './routes/study-data';
+import { syncRoutes } from './routes/sync';
+import { conflictRoutes } from './routes/conflicts';
 import { EntityNotFoundError, StaleVersionError } from './services/errors';
 import { installOriginGuard } from './security/origin-guard';
 
@@ -85,6 +87,8 @@ export async function createApp(options: AppOptions) {
   );
   await deviceRoutes(app, services);
   await studyDataRoutes(app, services);
+  await syncRoutes(app, services);
+  await conflictRoutes(app, services);
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {

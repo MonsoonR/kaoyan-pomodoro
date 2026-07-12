@@ -158,7 +158,9 @@ export const TaskSchema = z
     deletedAt: TimestampSchema.nullable(),
   })
   .strict();
-export const CreateTaskRequestSchema = TaskFieldsSchema.extend({ id: IdSchema }).strict();
+export const CreateTaskRequestSchema = TaskFieldsSchema.extend({
+  id: IdSchema,
+}).strict();
 export const UpdateTaskRequestSchema = TaskPatchSchema.and(
   z.object({ expectedVersion: ExpectedVersionSchema }).strict(),
 );
@@ -166,7 +168,9 @@ export const TaskIdParamsSchema = z.object({ taskId: IdSchema }).strict();
 export const TaskListQuerySchema = z
   .object({ filter: z.enum(['active', 'archived', 'all']).default('active') })
   .strict();
-export const TaskListResponseSchema = z.object({ tasks: z.array(TaskSchema) }).strict();
+export const TaskListResponseSchema = z
+  .object({ tasks: z.array(TaskSchema) })
+  .strict();
 
 export const DailyTaskSchema = z
   .object({
@@ -187,17 +191,29 @@ export const DailyTaskSchema = z
     deletedAt: TimestampSchema.nullable(),
   })
   .strict();
-export const CreateDailyTaskRequestSchema = DailyTaskFieldsSchema.omit({ sourceTaskId: true })
+export const CreateDailyTaskRequestSchema = DailyTaskFieldsSchema.omit({
+  sourceTaskId: true,
+})
   .extend({ id: IdSchema })
   .strict();
 export const UpdateDailyTaskRequestSchema = DailyTaskPatchSchema.and(
   z.object({ expectedVersion: ExpectedVersionSchema }).strict(),
 );
-export const DailyTaskIdParamsSchema = z.object({ dailyTaskId: IdSchema }).strict();
-export const DailyTaskDateQuerySchema = z.object({ date: z.iso.date() }).strict();
-export const DailyTaskListResponseSchema = z.object({ dailyTasks: z.array(DailyTaskSchema) }).strict();
+export const DailyTaskIdParamsSchema = z
+  .object({ dailyTaskId: IdSchema })
+  .strict();
+export const DailyTaskDateQuerySchema = z
+  .object({ date: z.iso.date() })
+  .strict();
+export const DailyTaskListResponseSchema = z
+  .object({ dailyTasks: z.array(DailyTaskSchema) })
+  .strict();
 export const AddToTodayRequestSchema = z
-  .object({ id: IdSchema, date: z.iso.date(), sortOrder: z.int().nonnegative().default(0) })
+  .object({
+    id: IdSchema,
+    date: z.iso.date(),
+    sortOrder: z.int().nonnegative().default(0),
+  })
   .strict();
 export const CompleteDailyTaskRequestSchema = VersionedMutationRequestSchema;
 export const RestoreDailyTaskRequestSchema = VersionedMutationRequestSchema;
@@ -287,8 +303,20 @@ export const SyncOperationSchema = z.union([
   }),
   SyncOperationBaseSchema.extend({
     entityType: z.literal('dailyTask'),
-    operationType: z.enum(['create', 'addToToday']),
+    operationType: z.literal('create'),
     payload: DailyTaskFieldsSchema,
+  }),
+  SyncOperationBaseSchema.extend({
+    entityType: z.literal('dailyTask'),
+    operationType: z.literal('addToToday'),
+    payload: z
+      .object({
+        sourceTaskId: IdSchema,
+        sourceTaskVersion: z.int().positive(),
+        date: z.iso.date(),
+        sortOrder: z.int().nonnegative(),
+      })
+      .strict(),
   }),
   SyncOperationBaseSchema.extend({
     entityType: z.literal('dailyTask'),
@@ -376,31 +404,110 @@ export const ApiErrorSchema = z.object({
   message: z.string().min(1),
 });
 
-export const PushOperationsRequestSchema = z.object({
-  operations: z.array(SyncOperationSchema).min(1).max(100),
-});
+export const PushOperationsRequestSchema = z
+  .object({ operations: z.array(z.unknown()).min(1).max(100) })
+  .strict();
 
 const OperationReceiptBaseSchema = z.object({
   operationId: IdSchema,
 });
 
-export const OperationReceiptSchema = z.discriminatedUnion('status', [
+const ValidOperationReceiptSchema = z.discriminatedUnion('status', [
   OperationReceiptBaseSchema.extend({
     status: z.literal('applied'),
     entityVersion: z.int().positive(),
     conflictId: z.null(),
-  }),
+    errorCode: z.null(),
+    errorMessage: z.null(),
+  }).strict(),
   OperationReceiptBaseSchema.extend({
     status: z.literal('duplicate'),
     entityVersion: z.int().positive(),
     conflictId: z.null(),
-  }),
+    errorCode: z.null(),
+    errorMessage: z.null(),
+  }).strict(),
   OperationReceiptBaseSchema.extend({
     status: z.literal('conflict'),
     entityVersion: z.int().positive().nullable(),
     conflictId: IdSchema,
-  }),
+    errorCode: z.null(),
+    errorMessage: z.null(),
+  }).strict(),
+  OperationReceiptBaseSchema.extend({
+    status: z.literal('rejected'),
+    entityVersion: z.int().positive().nullable(),
+    conflictId: z.null(),
+    errorCode: z.string().min(1),
+    errorMessage: z.string().min(1),
+  }).strict(),
 ]);
+export const OperationReceiptSchema = z.union([
+  ValidOperationReceiptSchema,
+  z
+    .object({
+      operationId: z.null(),
+      index: z.int().nonnegative(),
+      status: z.literal('rejected'),
+      entityVersion: z.null(),
+      conflictId: z.null(),
+      errorCode: z.literal('MALFORMED_OPERATION'),
+      errorMessage: z.literal('Operation is malformed'),
+    })
+    .strict(),
+]);
+
+export const ConflictSchema = z
+  .object({
+    id: IdSchema,
+    entityType: SyncEntityTypeSchema,
+    entityId: IdSchema,
+    conflictType: z.enum([
+      'delete_modify',
+      'complete_restore',
+      'archive_add_today',
+    ]),
+    localOperationId: IdSchema,
+    baseVersion: z.int().nonnegative(),
+    serverVersion: z.int().positive(),
+    localPayload: PayloadSchema,
+    serverPayload: PayloadSchema,
+    status: z.enum(['open', 'resolved']),
+    resolution: z.string().nullable(),
+    createdAt: TimestampSchema,
+    resolvedAt: TimestampSchema.nullable(),
+  })
+  .strict();
+export const ConflictListResponseSchema = z
+  .object({ conflicts: z.array(ConflictSchema) })
+  .strict();
+export const ConflictIdParamsSchema = z
+  .object({ conflictId: IdSchema })
+  .strict();
+export const ResolveConflictRequestSchema = z.discriminatedUnion('resolution', [
+  z
+    .object({
+      resolution: z.enum([
+        'keepServer',
+        'applyDelete',
+        'complete',
+        'restore',
+        'keepArchived',
+        'addAnyway',
+      ]),
+    })
+    .strict(),
+  z
+    .object({ resolution: z.literal('copyAsNew'), newEntityId: IdSchema })
+    .strict(),
+  z.object({ resolution: z.literal('unarchiveAndAdd') }).strict(),
+]);
+export const ResolveConflictResponseSchema = z
+  .object({
+    conflict: ConflictSchema,
+    affectedVersions: z.record(IdSchema, z.int().positive()),
+  })
+  .strict();
 
 export const PushOperationsResponseSchema = z.object({
   receipts: z.array(OperationReceiptSchema),
@@ -447,7 +554,16 @@ export type Task = z.infer<typeof TaskSchema>;
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
 export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequestSchema>;
 export type DailyTask = z.infer<typeof DailyTaskSchema>;
-export type CreateDailyTaskRequest = z.infer<typeof CreateDailyTaskRequestSchema>;
-export type UpdateDailyTaskRequest = z.infer<typeof UpdateDailyTaskRequestSchema>;
+export type CreateDailyTaskRequest = z.infer<
+  typeof CreateDailyTaskRequestSchema
+>;
+export type UpdateDailyTaskRequest = z.infer<
+  typeof UpdateDailyTaskRequestSchema
+>;
 export type Settings = z.infer<typeof SettingsSchema>;
 export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
+export type OperationReceipt = z.infer<typeof OperationReceiptSchema>;
+export type Conflict = z.infer<typeof ConflictSchema>;
+export type ResolveConflictRequest = z.infer<
+  typeof ResolveConflictRequestSchema
+>;
