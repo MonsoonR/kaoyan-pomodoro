@@ -16,14 +16,29 @@ export interface ChangeInput {
   changedAt: number;
 }
 
-export type ChangeLogWriter = (sqlite: Database.Database, input: ChangeInput) => void;
+export type ChangeLogWriter = (
+  sqlite: Database.Database,
+  input: ChangeInput,
+) => void;
 
 export const defaultChangeLogWriter: ChangeLogWriter = (sqlite, input) => {
-  sqlite.prepare(`INSERT INTO sync_changes
-    (user_id,entity_type,entity_id,version,change_type,payload,changed_at)
-    VALUES (?,?,?,?,?,?,?)`).run(
-      input.userId, input.entityType, input.entityId, input.version,
-      input.changeType, input.payload === null ? null : JSON.stringify(input.payload), input.changedAt,
+  sqlite
+    .prepare(
+      `
+        INSERT INTO sync_changes (
+          user_id, entity_type, entity_id, version,
+          change_type, payload, changed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    )
+    .run(
+      input.userId,
+      input.entityType,
+      input.entityId,
+      input.version,
+      input.changeType,
+      input.payload === null ? null : JSON.stringify(input.payload),
+      input.changedAt,
     );
 };
 

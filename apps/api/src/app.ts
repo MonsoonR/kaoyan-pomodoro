@@ -92,8 +92,14 @@ export async function createApp(options: AppOptions) {
         .code(400)
         .send({ code: 'VALIDATION_ERROR', message: 'Invalid request' });
     }
-    if (error instanceof EntityNotFoundError) return reply.code(404).send({code:error.code,message:error.message});
-    if (error instanceof StaleVersionError) return reply.code(409).send({code:error.code,message:error.message,currentVersion:error.currentVersion});
+    if (error instanceof EntityNotFoundError)
+      return reply.code(404).send({ code: error.code, message: error.message });
+    if (error instanceof StaleVersionError)
+      return reply.code(409).send({
+        code: error.code,
+        message: error.message,
+        currentVersion: error.currentVersion,
+      });
     if (typeof error === 'object' && error !== null && 'statusCode' in error) {
       if (error.statusCode === 429) {
         return reply
