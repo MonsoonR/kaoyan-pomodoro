@@ -3,4 +3,5 @@ dist/
 test-results/
 playwright-report/
 /.worktrees/
+/.pnpm-store/
 .DS_Store

@@ -1,0 +1,24 @@
+{
+  "name": "@kaoyan/contracts",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}
