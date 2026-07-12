@@ -10,6 +10,7 @@
     }
   },
   "scripts": {
+    "lint": "eslint .",
     "build": "tsc --project tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

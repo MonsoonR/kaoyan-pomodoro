@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 
 import { openDatabase, type AppDatabase } from './client';
+import { resolveDatabaseSource } from './database-source';
 
 export const defaultMigrationsFolder = fileURLToPath(
   new URL('../../drizzle', import.meta.url),
@@ -28,12 +29,12 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
-  const source = process.env.DB_FILE_NAME;
+  const source = process.env.DATABASE_PATH;
   if (!source) {
-    throw new Error('DB_FILE_NAME is required to run database migrations');
+    throw new Error('DATABASE_PATH is required to run database migrations');
   }
 
-  const connection = openDatabase(source);
+  const connection = openDatabase(resolveDatabaseSource(source));
   try {
     migrateDatabase(connection.db);
   } finally {

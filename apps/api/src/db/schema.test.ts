@@ -221,6 +221,75 @@ describe('SQLite schema migrations', () => {
     });
   });
 
+  it('rejects duplicate operation IDs and assigns strictly increasing change cursors', () => {
+    const now = 1_789_000_000_000;
+    connection.sqlite.exec(`
+      INSERT INTO users (id, singleton_key, username, password_hash, password_changed_at)
+      VALUES ('user-1', 1, 'owner', 'hash', ${now});
+      INSERT INTO devices (id, user_id, name, browser, operating_system, last_active_at)
+      VALUES ('device-1', 'user-1', 'Laptop', 'Chrome', 'Windows', ${now});
+      INSERT INTO sync_operations (
+        operation_id, user_id, device_id, entity_type, entity_id, operation_type,
+        base_version, payload, status, created_at
+      ) VALUES ('operation-1', 'user-1', 'device-1', 'task', 'task-1', 'create', 0, '{}', 'applied', ${now});
+      INSERT INTO sync_changes (user_id, entity_type, entity_id, version, change_type, payload)
+      VALUES ('user-1', 'task', 'task-1', 1, 'upsert', '{}');
+      INSERT INTO sync_changes (user_id, entity_type, entity_id, version, change_type, payload)
+      VALUES ('user-1', 'task', 'task-1', 2, 'upsert', '{}');
+    `);
+
+    expect(() => connection.sqlite.exec(`
+      INSERT INTO sync_operations (
+        operation_id, user_id, device_id, entity_type, entity_id, operation_type,
+        base_version, payload, status, created_at
+      ) VALUES ('operation-1', 'user-1', 'device-1', 'task', 'task-2', 'create', 0, '{}', 'applied', ${now});
+    `)).toThrow(/UNIQUE/);
+
+    const cursors = connection.sqlite.prepare(
+      'SELECT cursor FROM sync_changes ORDER BY cursor',
+    ).all() as Array<{ cursor: number }>;
+    expect(cursors).toHaveLength(2);
+    expect(cursors[1]!.cursor).toBeGreaterThan(cursors[0]!.cursor);
+  });
+
+  it('declares key onDelete policies and preserves operation credentials on revocation', () => {
+    type ForeignKey = { from: string; on_delete: string; table: string };
+    const policies = (table: string) => connection.sqlite
+      .prepare(`PRAGMA foreign_key_list(${table})`).all() as ForeignKey[];
+
+    expect(policies('sessions')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'device_id', on_delete: 'CASCADE', table: 'devices' }),
+      expect.objectContaining({ from: 'user_id', on_delete: 'CASCADE', table: 'users' }),
+    ]));
+    expect(policies('daily_tasks')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'source_task_id', on_delete: 'SET NULL', table: 'tasks' }),
+    ]));
+    expect(policies('sync_operations')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'device_id', on_delete: 'RESTRICT', table: 'devices' }),
+    ]));
+
+    const now = 1_789_000_000_000;
+    connection.sqlite.exec(`
+      INSERT INTO users (id, singleton_key, username, password_hash, password_changed_at)
+      VALUES ('user-1', 1, 'owner', 'hash', ${now});
+      INSERT INTO devices (id, user_id, name, browser, operating_system, last_active_at)
+      VALUES ('device-1', 'user-1', 'Laptop', 'Chrome', 'Windows', ${now});
+      INSERT INTO sessions (id, user_id, device_id, token_hash, expires_at, last_seen_at)
+      VALUES ('session-1', 'user-1', 'device-1', 'token', ${now + 1000}, ${now});
+      INSERT INTO sync_operations (
+        operation_id, user_id, device_id, entity_type, entity_id, operation_type,
+        base_version, payload, status, created_at
+      ) VALUES ('operation-1', 'user-1', 'device-1', 'task', 'task-1', 'create', 0, '{}', 'applied', ${now});
+      UPDATE sessions SET revoked_at = ${now + 1} WHERE id = 'session-1';
+    `);
+    expect(connection.sqlite.prepare('SELECT count(*) AS count FROM sync_operations').get())
+      .toEqual({ count: 1 });
+    expect(() => connection.sqlite.prepare('DELETE FROM devices WHERE id = ?').run('device-1'))
+      .toThrow(/FOREIGN KEY/);
+    expect(connection.sqlite.prepare('SELECT count(*) AS count FROM sync_operations').get())
+      .toEqual({ count: 1 });
+  });
+
   it('reopens and remigrates a temporary file database', () => {
     const directory = mkdtempSync(join(tmpdir(), 'kaoyan-pomodoro-'));
     const source = join(directory, 'schema.sqlite');

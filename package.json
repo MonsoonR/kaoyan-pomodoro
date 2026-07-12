@@ -1,6 +1,7 @@
 {
   "name": "@kaoyan/workspace",
   "private": true,
+  "type": "module",
   "version": "1.0.0",
   "packageManager": "pnpm@10.33.2",
   "engines": {
@@ -14,10 +15,16 @@
   },
   "scripts": {
     "dev": "pnpm --filter @kaoyan/web dev",
-    "lint": "pnpm --recursive --if-present lint",
+    "lint": "pnpm --recursive lint",
     "typecheck": "pnpm --recursive --if-present typecheck",
     "test": "pnpm --recursive --if-present test",
     "build": "pnpm --recursive --if-present build",
     "test:e2e": "pnpm --filter @kaoyan/web test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "typescript-eslint": "^8.46.4"
   }
 }

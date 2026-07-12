@@ -194,7 +194,7 @@ export const conflicts = sqliteTable('conflicts', {
 export const syncOperations = sqliteTable('sync_operations', {
   operationId: text('operation_id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  deviceId: text('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  deviceId: text('device_id').notNull().references(() => devices.id, { onDelete: 'restrict' }),
   entityType: text('entity_type').notNull(),
   entityId: text('entity_id').notNull(),
   operationType: text('operation_type').notNull(),
