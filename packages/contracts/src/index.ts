@@ -7,6 +7,37 @@ const EmptyPayloadSchema = z.object({}).strict();
 const TimerPresetSchema = z.enum(['25-5', '50-10', 'custom']);
 const PhaseSchema = z.enum(['focus', 'short_break', 'long_break']);
 
+export const UsernameSchema = z.string().trim().min(3).max(64);
+export const PasswordSchema = z.string().min(12).max(128);
+export const LoginRequestSchema = z.object({
+  username: UsernameSchema,
+  password: PasswordSchema,
+}).strict();
+export const ChangePasswordRequestSchema = z.object({
+  currentPassword: PasswordSchema,
+  newPassword: PasswordSchema,
+  confirmPassword: PasswordSchema,
+}).strict().refine((value) => value.newPassword === value.confirmPassword, {
+  message: 'Passwords do not match', path: ['confirmPassword'],
+});
+export const AuthUserSchema = z.object({ id: IdSchema, username: UsernameSchema });
+export const CurrentSessionSchema = z.object({
+  user: AuthUserSchema,
+  deviceId: IdSchema,
+  deviceName: z.string().min(1).max(100),
+  expiresAt: TimestampSchema,
+});
+export const DeviceSchema = z.object({
+  id: IdSchema,
+  name: z.string().min(1).max(100),
+  browser: z.string().min(1).max(50),
+  operatingSystem: z.string().min(1).max(50),
+  isCurrent: z.boolean(),
+  firstLoginAt: TimestampSchema,
+  lastActiveAt: TimestampSchema,
+});
+export const RenameDeviceRequestSchema = z.object({ name: z.string().trim().min(1).max(100) }).strict();
+
 const TaskFieldsSchema = z.object({
   title: z.string().trim().min(1).max(200),
   subject: z.string().trim().min(1).max(50),

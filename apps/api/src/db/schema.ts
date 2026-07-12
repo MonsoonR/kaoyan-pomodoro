@@ -20,6 +20,9 @@ export const users = sqliteTable('users', {
   passwordChangedAt: integer('password_changed_at', { mode: 'timestamp_ms' }).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().default(nowInMilliseconds),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull().default(nowInMilliseconds),
+  failedLoginCount: integer('failed_login_count').notNull().default(0),
+  lastFailedLoginAt: integer('last_failed_login_at', { mode: 'timestamp_ms' }),
+  lockedUntil: integer('locked_until', { mode: 'timestamp_ms' }),
 }, (table) => [
   uniqueIndex('users_singleton_idx').on(table.singletonKey),
   uniqueIndex('users_username_idx').on(table.username),

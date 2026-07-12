@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ChangePasswordRequestSchema,
+  LoginRequestSchema,
+  RenameDeviceRequestSchema,
   ActiveTimerSchema,
   EntityVersionSchema,
   OperationReceiptSchema,
@@ -11,6 +14,25 @@ import {
 const entityId = '018f556e-5bbb-7850-8117-41a14e88b577';
 const operationId = '019f556e-5bbb-7850-8117-41a14e88b577';
 const timestamp = '2026-07-12T08:30:00.000Z';
+
+describe('authentication contracts', () => {
+  it('validates login and preserves password whitespace', () => {
+    expect(LoginRequestSchema.parse({ username: '  learner  ', password: 'long password  ' }))
+      .toEqual({ username: 'learner', password: 'long password  ' });
+  });
+
+  it('requires matching password confirmation', () => {
+    expect(() => ChangePasswordRequestSchema.parse({
+      currentPassword: 'current password',
+      newPassword: 'new password long',
+      confirmPassword: 'different password',
+    })).toThrow();
+  });
+
+  it('rejects empty device names', () => {
+    expect(() => RenameDeviceRequestSchema.parse({ name: '   ' })).toThrow();
+  });
+});
 
 describe('EntityVersionSchema', () => {
   it('accepts a versioned entity with an optional deletion timestamp', () => {
