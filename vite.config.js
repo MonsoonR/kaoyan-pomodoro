@@ -10,5 +10,6 @@ const base =
 
 export default defineConfig({
   base,
+  build: { target: 'esnext' },
   plugins: [react()],
 });
