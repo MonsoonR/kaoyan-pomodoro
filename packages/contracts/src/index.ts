@@ -6,6 +6,7 @@ const PayloadSchema = z.record(z.string(), z.unknown());
 const EmptyPayloadSchema = z.object({}).strict();
 const TimerPresetSchema = z.enum(['25-5', '50-10', 'custom']);
 const PhaseSchema = z.enum(['focus', 'short_break', 'long_break']);
+const ExpectedVersionSchema = z.int().positive();
 
 export const UsernameSchema = z.string().trim().min(3).max(64);
 export const PasswordSchema = z.string().min(12).max(128);
@@ -137,6 +138,96 @@ const SettingsPatchSchema = z
   .refine((payload) => Object.keys(payload).length > 0, {
     message: 'Settings update payload cannot be empty',
   });
+
+export const VersionedMutationRequestSchema = z
+  .object({ expectedVersion: ExpectedVersionSchema })
+  .strict();
+
+export const TaskSchema = z
+  .object({
+    id: IdSchema,
+    title: z.string().min(1).max(200),
+    subject: z.string().min(1).max(50),
+    defaultPomodoroTarget: z.int().min(1).max(99),
+    defaultTimerPreset: TimerPresetSchema,
+    notes: z.string().max(5_000).nullable(),
+    archived: z.boolean(),
+    version: z.int().positive(),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+    deletedAt: TimestampSchema.nullable(),
+  })
+  .strict();
+export const CreateTaskRequestSchema = TaskFieldsSchema.extend({ id: IdSchema }).strict();
+export const UpdateTaskRequestSchema = TaskPatchSchema.and(
+  z.object({ expectedVersion: ExpectedVersionSchema }).strict(),
+);
+export const TaskIdParamsSchema = z.object({ taskId: IdSchema }).strict();
+export const TaskListQuerySchema = z
+  .object({ filter: z.enum(['active', 'archived', 'all']).default('active') })
+  .strict();
+export const TaskListResponseSchema = z.object({ tasks: z.array(TaskSchema) }).strict();
+
+export const DailyTaskSchema = z
+  .object({
+    id: IdSchema,
+    sourceTaskId: IdSchema.nullable(),
+    date: z.iso.date(),
+    title: z.string().min(1).max(200),
+    subject: z.string().min(1).max(50),
+    pomodoroTarget: z.int().min(1).max(99),
+    pomodoroCompleted: z.int().nonnegative(),
+    timerPreset: TimerPresetSchema,
+    status: z.enum(['pending', 'active', 'awaiting_confirmation', 'completed']),
+    sortOrder: z.int().nonnegative(),
+    completedAt: TimestampSchema.nullable(),
+    version: z.int().positive(),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+    deletedAt: TimestampSchema.nullable(),
+  })
+  .strict();
+export const CreateDailyTaskRequestSchema = DailyTaskFieldsSchema.omit({ sourceTaskId: true })
+  .extend({ id: IdSchema })
+  .strict();
+export const UpdateDailyTaskRequestSchema = DailyTaskPatchSchema.and(
+  z.object({ expectedVersion: ExpectedVersionSchema }).strict(),
+);
+export const DailyTaskIdParamsSchema = z.object({ dailyTaskId: IdSchema }).strict();
+export const DailyTaskDateQuerySchema = z.object({ date: z.iso.date() }).strict();
+export const DailyTaskListResponseSchema = z.object({ dailyTasks: z.array(DailyTaskSchema) }).strict();
+export const AddToTodayRequestSchema = z
+  .object({ id: IdSchema, date: z.iso.date(), sortOrder: z.int().nonnegative().default(0) })
+  .strict();
+export const CompleteDailyTaskRequestSchema = VersionedMutationRequestSchema;
+export const RestoreDailyTaskRequestSchema = VersionedMutationRequestSchema;
+
+export const SettingsSchema = z
+  .object({
+    id: IdSchema,
+    defaultPreset: TimerPresetSchema,
+    customFocusMinutes: z.int().min(1).max(180),
+    customShortBreakMinutes: z.int().min(1).max(60),
+    customLongBreakMinutes: z.int().min(1).max(120),
+    longBreakInterval: z.int().min(1).max(12),
+    soundEnabled: z.boolean(),
+    notificationsEnabled: z.boolean(),
+    version: z.int().positive(),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+    deletedAt: z.null(),
+  })
+  .strict();
+export const UpdateSettingsRequestSchema = SettingsPatchSchema.and(
+  z.object({ expectedVersion: ExpectedVersionSchema }).strict(),
+);
+export const StaleVersionErrorSchema = z
+  .object({
+    code: z.literal('STALE_VERSION'),
+    message: z.literal('Entity version is stale'),
+    currentVersion: z.int().positive(),
+  })
+  .strict();
 
 export const EntityVersionSchema = z.object({
   id: IdSchema,
@@ -352,3 +443,11 @@ export type PushOperationsResponse = z.infer<
 export type PullChangesQuery = z.infer<typeof PullChangesQuerySchema>;
 export type PullChangesResponse = z.infer<typeof PullChangesResponseSchema>;
 export type TimerStateResponse = z.infer<typeof TimerStateResponseSchema>;
+export type Task = z.infer<typeof TaskSchema>;
+export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
+export type UpdateTaskRequest = z.infer<typeof UpdateTaskRequestSchema>;
+export type DailyTask = z.infer<typeof DailyTaskSchema>;
+export type CreateDailyTaskRequest = z.infer<typeof CreateDailyTaskRequestSchema>;
+export type UpdateDailyTaskRequest = z.infer<typeof UpdateDailyTaskRequestSchema>;
+export type Settings = z.infer<typeof SettingsSchema>;
+export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;

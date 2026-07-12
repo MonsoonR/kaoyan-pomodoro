@@ -16,6 +16,8 @@ import { openDatabase } from './db/client';
 import { migrateDatabase } from './db/migrate';
 import { authRoutes } from './routes/auth';
 import { deviceRoutes } from './routes/devices';
+import { studyDataRoutes } from './routes/study-data';
+import { EntityNotFoundError, StaleVersionError } from './services/errors';
 import { installOriginGuard } from './security/origin-guard';
 
 const BODY_LIMIT_BYTES = 64 * 1024;
@@ -82,6 +84,7 @@ export async function createApp(options: AppOptions) {
     options.loginRateLimit ?? { max: 10, timeWindow: '1 minute' },
   );
   await deviceRoutes(app, services);
+  await studyDataRoutes(app, services);
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -89,6 +92,8 @@ export async function createApp(options: AppOptions) {
         .code(400)
         .send({ code: 'VALIDATION_ERROR', message: 'Invalid request' });
     }
+    if (error instanceof EntityNotFoundError) return reply.code(404).send({code:error.code,message:error.message});
+    if (error instanceof StaleVersionError) return reply.code(409).send({code:error.code,message:error.message,currentVersion:error.currentVersion});
     if (typeof error === 'object' && error !== null && 'statusCode' in error) {
       if (error.statusCode === 429) {
         return reply

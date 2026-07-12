@@ -4,14 +4,10 @@ import {
   RenameDeviceRequestSchema,
   SuccessResponseSchema,
 } from '@kaoyan/contracts';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 
-import { SESSION_COOKIE_NAME } from '../auth/constants';
-import {
-  authenticate,
-  type AuthenticatedSession,
-  type Services,
-} from '../auth/session-service';
+import type { Services } from '../auth/session-service';
+import { getAuthenticatedSession, requireAuthentication } from '../auth/auth-hook';
 
 interface DeviceListRow {
   id: string;
@@ -22,30 +18,11 @@ interface DeviceListRow {
   last_active_at: number;
 }
 
-function requireAuthentication(services: Services) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    const auth = authenticate(services, request.cookies[SESSION_COOKIE_NAME]);
-    if (!auth) {
-      return reply.code(401).send({
-        code: 'UNAUTHENTICATED',
-        message: 'Authentication required',
-      });
-    }
-    request.authSession = auth;
-  };
-}
-
-function authenticatedSession(request: FastifyRequest): AuthenticatedSession {
-  if (!request.authSession)
-    throw new Error('Authentication pre-handler did not set a session');
-  return request.authSession;
-}
-
 export async function deviceRoutes(app: FastifyInstance, services: Services) {
   const authGuard = requireAuthentication(services);
 
   app.get('/api/devices', { preHandler: authGuard }, async (request) => {
-    const auth = authenticatedSession(request);
+    const auth = getAuthenticatedSession(request);
     const now = services.now().getTime();
     const rows = services.sqlite
       .prepare(
@@ -85,7 +62,7 @@ export async function deviceRoutes(app: FastifyInstance, services: Services) {
     '/api/devices/:deviceId',
     { preHandler: authGuard },
     async (request, reply) => {
-      const auth = authenticatedSession(request);
+      const auth = getAuthenticatedSession(request);
       const { deviceId } = DeviceIdParamsSchema.parse(request.params);
       const body = RenameDeviceRequestSchema.parse(request.body);
       const result = services.sqlite
@@ -108,7 +85,7 @@ export async function deviceRoutes(app: FastifyInstance, services: Services) {
     '/api/devices/:deviceId',
     { preHandler: authGuard },
     async (request, reply) => {
-      const auth = authenticatedSession(request);
+      const auth = getAuthenticatedSession(request);
       const { deviceId } = DeviceIdParamsSchema.parse(request.params);
       if (deviceId === auth.device_id) {
         return reply.code(409).send({
@@ -135,7 +112,7 @@ export async function deviceRoutes(app: FastifyInstance, services: Services) {
     '/api/devices/logout-others',
     { preHandler: authGuard },
     async (request) => {
-      const auth = authenticatedSession(request);
+      const auth = getAuthenticatedSession(request);
       services.sqlite
         .prepare(
           `

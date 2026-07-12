@@ -5,42 +5,16 @@ import {
   LoginResponseSchema,
   SuccessResponseSchema,
 } from '@kaoyan/contracts';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 
 import { COOKIE_OPTIONS, SESSION_COOKIE_NAME } from '../auth/constants';
 import {
   AuthFailure,
-  authenticate,
   changePassword,
   login,
-  type AuthenticatedSession,
   type Services,
 } from '../auth/session-service';
-
-declare module 'fastify' {
-  interface FastifyRequest {
-    authSession?: AuthenticatedSession;
-  }
-}
-
-function requireAuthentication(services: Services) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    const auth = authenticate(services, request.cookies[SESSION_COOKIE_NAME]);
-    if (!auth) {
-      return reply.code(401).send({
-        code: 'UNAUTHENTICATED',
-        message: 'Authentication required',
-      });
-    }
-    request.authSession = auth;
-  };
-}
-
-function authenticatedSession(request: FastifyRequest): AuthenticatedSession {
-  if (!request.authSession)
-    throw new Error('Authentication pre-handler did not set a session');
-  return request.authSession;
-}
+import { getAuthenticatedSession, requireAuthentication } from '../auth/auth-hook';
 
 export async function authRoutes(
   app: FastifyInstance,
@@ -81,7 +55,7 @@ export async function authRoutes(
   );
 
   app.get('/api/auth/me', { preHandler: authGuard }, async (request) => {
-    const auth = authenticatedSession(request);
+    const auth = getAuthenticatedSession(request);
     return CurrentSessionSchema.parse({
       user: { id: auth.user_id, username: auth.username },
       deviceId: auth.device_id,
@@ -94,7 +68,7 @@ export async function authRoutes(
     '/api/auth/logout',
     { preHandler: authGuard },
     async (request, reply) => {
-      const auth = authenticatedSession(request);
+      const auth = getAuthenticatedSession(request);
       services.sqlite
         .prepare(
           `
@@ -112,7 +86,7 @@ export async function authRoutes(
     { preHandler: authGuard },
     async (request, reply) => {
       const body = ChangePasswordRequestSchema.parse(request.body);
-      const auth = authenticatedSession(request);
+      const auth = getAuthenticatedSession(request);
       try {
         await changePassword(
           services,
