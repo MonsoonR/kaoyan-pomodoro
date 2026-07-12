@@ -9,100 +9,134 @@ const PhaseSchema = z.enum(['focus', 'short_break', 'long_break']);
 
 export const UsernameSchema = z.string().trim().min(3).max(64);
 export const PasswordSchema = z.string().min(12).max(128);
-export const LoginRequestSchema = z.object({
-  username: UsernameSchema,
-  password: PasswordSchema,
-}).strict();
-export const ChangePasswordRequestSchema = z.object({
-  currentPassword: PasswordSchema,
-  newPassword: PasswordSchema,
-  confirmPassword: PasswordSchema,
-}).strict().refine((value) => value.newPassword === value.confirmPassword, {
-  message: 'Passwords do not match', path: ['confirmPassword'],
-});
-export const AuthUserSchema = z.object({ id: IdSchema, username: UsernameSchema });
-export const CurrentSessionSchema = z.object({
-  user: AuthUserSchema,
-  deviceId: IdSchema,
-  deviceName: z.string().min(1).max(100),
-  expiresAt: TimestampSchema,
-});
-export const DeviceSchema = z.object({
-  id: IdSchema,
-  name: z.string().min(1).max(100),
-  browser: z.string().min(1).max(50),
-  operatingSystem: z.string().min(1).max(50),
-  isCurrent: z.boolean(),
-  firstLoginAt: TimestampSchema,
-  lastActiveAt: TimestampSchema,
-});
-export const RenameDeviceRequestSchema = z.object({ name: z.string().trim().min(1).max(100) }).strict();
+export const LoginRequestSchema = z
+  .object({
+    username: UsernameSchema,
+    password: PasswordSchema,
+  })
+  .strict();
+export const ChangePasswordRequestSchema = z
+  .object({
+    currentPassword: PasswordSchema,
+    newPassword: PasswordSchema,
+    confirmPassword: PasswordSchema,
+  })
+  .strict()
+  .refine((value) => value.newPassword === value.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
+export const AuthUserSchema = z
+  .object({ id: IdSchema, username: UsernameSchema })
+  .strict();
+export const CurrentSessionSchema = z
+  .object({
+    user: AuthUserSchema,
+    deviceId: IdSchema,
+    deviceName: z.string().min(1).max(100),
+    expiresAt: TimestampSchema,
+  })
+  .strict();
+export const DeviceSchema = z
+  .object({
+    id: IdSchema,
+    name: z.string().min(1).max(100),
+    browser: z.string().min(1).max(50),
+    operatingSystem: z.string().min(1).max(50),
+    isCurrent: z.boolean(),
+    firstLoginAt: TimestampSchema,
+    lastActiveAt: TimestampSchema,
+  })
+  .strict();
+export const RenameDeviceRequestSchema = z
+  .object({ name: z.string().trim().min(1).max(100) })
+  .strict();
+export const LoginResponseSchema = CurrentSessionSchema;
+export const DeviceIdParamsSchema = z.object({ deviceId: IdSchema }).strict();
+export const DeviceListResponseSchema = z
+  .object({ devices: z.array(DeviceSchema) })
+  .strict();
+export const SuccessResponseSchema = z.object({ ok: z.literal(true) }).strict();
 
-const TaskFieldsSchema = z.object({
-  title: z.string().trim().min(1).max(200),
-  subject: z.string().trim().min(1).max(50),
-  defaultPomodoroTarget: z.int().min(1).max(99),
-  defaultTimerPreset: TimerPresetSchema,
-  notes: z.string().max(5_000).nullable().optional(),
-}).strict();
+const TaskFieldsSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    subject: z.string().trim().min(1).max(50),
+    defaultPomodoroTarget: z.int().min(1).max(99),
+    defaultTimerPreset: TimerPresetSchema,
+    notes: z.string().max(5_000).nullable().optional(),
+  })
+  .strict();
 
 const TaskPatchSchema = TaskFieldsSchema.partial().refine(
   (payload) => Object.keys(payload).length > 0,
   { message: 'Task update payload cannot be empty' },
 );
 
-const DailyTaskFieldsSchema = z.object({
-  sourceTaskId: IdSchema.nullable(),
-  date: z.iso.date(),
-  title: z.string().trim().min(1).max(200),
-  subject: z.string().trim().min(1).max(50),
-  pomodoroTarget: z.int().min(1).max(99),
-  timerPreset: TimerPresetSchema,
-  sortOrder: z.int().nonnegative(),
-}).strict();
+const DailyTaskFieldsSchema = z
+  .object({
+    sourceTaskId: IdSchema.nullable(),
+    date: z.iso.date(),
+    title: z.string().trim().min(1).max(200),
+    subject: z.string().trim().min(1).max(50),
+    pomodoroTarget: z.int().min(1).max(99),
+    timerPreset: TimerPresetSchema,
+    sortOrder: z.int().nonnegative(),
+  })
+  .strict();
 
-const DailyTaskPatchSchema = DailyTaskFieldsSchema.omit({ sourceTaskId: true, date: true })
+const DailyTaskPatchSchema = DailyTaskFieldsSchema.omit({
+  sourceTaskId: true,
+  date: true,
+})
   .partial()
-  .refine(
-    (payload) => Object.keys(payload).length > 0,
-    { message: 'Daily task update payload cannot be empty' },
-  );
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: 'Daily task update payload cannot be empty',
+  });
 
-const FocusSessionCreatePayloadSchema = z.object({
-  dailyTaskId: IdSchema,
-  taskTitle: z.string().trim().min(1).max(200),
-  subject: z.string().trim().min(1).max(50),
-  phase: PhaseSchema,
-  plannedSeconds: z.int().positive(),
-  effectiveSeconds: z.int().nonnegative(),
-  startedAt: TimestampSchema,
-  endedAt: TimestampSchema,
-  result: z.enum(['completed', 'interrupted', 'abandoned']),
-  interruptionReason: z.string().trim().min(1).max(500).nullable(),
-}).strict();
+const FocusSessionCreatePayloadSchema = z
+  .object({
+    dailyTaskId: IdSchema,
+    taskTitle: z.string().trim().min(1).max(200),
+    subject: z.string().trim().min(1).max(50),
+    phase: PhaseSchema,
+    plannedSeconds: z.int().positive(),
+    effectiveSeconds: z.int().nonnegative(),
+    startedAt: TimestampSchema,
+    endedAt: TimestampSchema,
+    result: z.enum(['completed', 'interrupted', 'abandoned']),
+    interruptionReason: z.string().trim().min(1).max(500).nullable(),
+  })
+  .strict();
 
-const TimerStartPayloadSchema = z.object({
-  dailyTaskId: IdSchema,
-  phase: PhaseSchema,
-  plannedSeconds: z.int().positive(),
-}).strict();
+const TimerStartPayloadSchema = z
+  .object({
+    dailyTaskId: IdSchema,
+    phase: PhaseSchema,
+    plannedSeconds: z.int().positive(),
+  })
+  .strict();
 
-const ReasonPayloadSchema = z.object({
-  reason: z.string().trim().min(1).max(500),
-}).strict();
+const ReasonPayloadSchema = z
+  .object({
+    reason: z.string().trim().min(1).max(500),
+  })
+  .strict();
 
-const SettingsPatchSchema = z.object({
-  defaultPreset: TimerPresetSchema.optional(),
-  customFocusMinutes: z.int().min(1).max(180).optional(),
-  customShortBreakMinutes: z.int().min(1).max(60).optional(),
-  customLongBreakMinutes: z.int().min(1).max(120).optional(),
-  longBreakInterval: z.int().min(1).max(12).optional(),
-  soundEnabled: z.boolean().optional(),
-  notificationsEnabled: z.boolean().optional(),
-}).strict().refine(
-  (payload) => Object.keys(payload).length > 0,
-  { message: 'Settings update payload cannot be empty' },
-);
+const SettingsPatchSchema = z
+  .object({
+    defaultPreset: TimerPresetSchema.optional(),
+    customFocusMinutes: z.int().min(1).max(180).optional(),
+    customShortBreakMinutes: z.int().min(1).max(60).optional(),
+    customLongBreakMinutes: z.int().min(1).max(120).optional(),
+    longBreakInterval: z.int().min(1).max(12).optional(),
+    soundEnabled: z.boolean().optional(),
+    notificationsEnabled: z.boolean().optional(),
+  })
+  .strict()
+  .refine((payload) => Object.keys(payload).length > 0, {
+    message: 'Settings update payload cannot be empty',
+  });
 
 export const EntityVersionSchema = z.object({
   id: IdSchema,
@@ -135,12 +169,14 @@ export const SyncOperationTypeSchema = z.enum([
   'timerExit',
 ]);
 
-const SyncOperationBaseSchema = z.object({
-  operationId: IdSchema,
-  entityId: IdSchema,
-  baseVersion: z.int().nonnegative(),
-  createdAt: TimestampSchema,
-}).strict();
+const SyncOperationBaseSchema = z
+  .object({
+    operationId: IdSchema,
+    entityId: IdSchema,
+    baseVersion: z.int().nonnegative(),
+    createdAt: TimestampSchema,
+  })
+  .strict();
 
 export const SyncOperationSchema = z.union([
   SyncOperationBaseSchema.extend({
@@ -297,6 +333,12 @@ export const TimerStateResponseSchema = z.object({
 });
 
 export type EntityVersion = z.infer<typeof EntityVersionSchema>;
+export type CurrentSession = z.infer<typeof CurrentSessionSchema>;
+export type LoginResponse = z.infer<typeof LoginResponseSchema>;
+export type Device = z.infer<typeof DeviceSchema>;
+export type DeviceIdParams = z.infer<typeof DeviceIdParamsSchema>;
+export type DeviceListResponse = z.infer<typeof DeviceListResponseSchema>;
+export type SuccessResponse = z.infer<typeof SuccessResponseSchema>;
 export type SyncEntityType = z.infer<typeof SyncEntityTypeSchema>;
 export type SyncOperationType = z.infer<typeof SyncOperationTypeSchema>;
 export type SyncOperation = z.infer<typeof SyncOperationSchema>;
@@ -304,7 +346,9 @@ export type SyncChange = z.infer<typeof SyncChangeSchema>;
 export type ActiveTimer = z.infer<typeof ActiveTimerSchema>;
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 export type PushOperationsRequest = z.infer<typeof PushOperationsRequestSchema>;
-export type PushOperationsResponse = z.infer<typeof PushOperationsResponseSchema>;
+export type PushOperationsResponse = z.infer<
+  typeof PushOperationsResponseSchema
+>;
 export type PullChangesQuery = z.infer<typeof PullChangesQuerySchema>;
 export type PullChangesResponse = z.infer<typeof PullChangesResponseSchema>;
 export type TimerStateResponse = z.infer<typeof TimerStateResponseSchema>;

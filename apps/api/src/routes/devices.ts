@@ -1,11 +1,151 @@
-import type { FastifyInstance } from 'fastify';
-import { RenameDeviceRequestSchema } from '@kaoyan/contracts';
+import {
+  DeviceIdParamsSchema,
+  DeviceListResponseSchema,
+  RenameDeviceRequestSchema,
+  SuccessResponseSchema,
+} from '@kaoyan/contracts';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+
 import { SESSION_COOKIE_NAME } from '../auth/constants';
-import { authenticate, type Services } from '../auth/session-service';
-const guard=(s:Services)=>async(req:any,reply:any)=>{const a=authenticate(s,req.cookies[SESSION_COOKIE_NAME]);if(!a)return reply.code(401).send({code:'UNAUTHENTICATED',message:'Authentication required'});req.auth=a;};
-export async function deviceRoutes(app:FastifyInstance,s:Services){
-  app.get('/api/devices',{preHandler:guard(s)},async(req:any)=>{const now=s.now().getTime();const rows=s.sqlite.prepare(`select devices.id,devices.name,devices.browser,devices.operating_system,min(sessions.created_at) first_login_at,max(sessions.last_seen_at) last_active_at from devices join sessions on sessions.device_id=devices.id where devices.user_id=? and sessions.revoked_at is null and sessions.expires_at>? group by devices.id order by last_active_at desc`).all(req.auth.user_id,now) as any[];return {devices:rows.map(r=>({id:r.id,name:r.name,browser:r.browser,operatingSystem:r.operating_system,isCurrent:r.id===req.auth.device_id,firstLoginAt:new Date(r.first_login_at).toISOString(),lastActiveAt:new Date(r.last_active_at).toISOString()}))};});
-  app.patch('/api/devices/:deviceId',{preHandler:guard(s)},async(req:any,reply)=>{const body=RenameDeviceRequestSchema.parse(req.body);const result=s.sqlite.prepare('update devices set name=?,updated_at=? where id=? and user_id=?').run(body.name,s.now().getTime(),req.params.deviceId,req.auth.user_id);if(!result.changes)return reply.code(404).send({code:'DEVICE_NOT_FOUND',message:'Device not found'});return {ok:true};});
-  app.delete('/api/devices/:deviceId',{preHandler:guard(s)},async(req:any,reply)=>{if(req.params.deviceId===req.auth.device_id)return reply.code(409).send({code:'CURRENT_DEVICE',message:'Use logout for the current device'});s.sqlite.transaction(()=>s.sqlite.prepare('update sessions set revoked_at=? where device_id=? and user_id=? and revoked_at is null').run(s.now().getTime(),req.params.deviceId,req.auth.user_id))();return {ok:true};});
-  app.post('/api/devices/logout-others',{preHandler:guard(s)},async(req:any)=>{s.sqlite.prepare('update sessions set revoked_at=? where user_id=? and id<>? and revoked_at is null').run(s.now().getTime(),req.auth.user_id,req.auth.session_id);return {ok:true};});
+import {
+  authenticate,
+  type AuthenticatedSession,
+  type Services,
+} from '../auth/session-service';
+
+interface DeviceListRow {
+  id: string;
+  name: string;
+  browser: string;
+  operating_system: string;
+  first_login_at: number;
+  last_active_at: number;
+}
+
+function requireAuthentication(services: Services) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = authenticate(services, request.cookies[SESSION_COOKIE_NAME]);
+    if (!auth) {
+      return reply.code(401).send({
+        code: 'UNAUTHENTICATED',
+        message: 'Authentication required',
+      });
+    }
+    request.authSession = auth;
+  };
+}
+
+function authenticatedSession(request: FastifyRequest): AuthenticatedSession {
+  if (!request.authSession)
+    throw new Error('Authentication pre-handler did not set a session');
+  return request.authSession;
+}
+
+export async function deviceRoutes(app: FastifyInstance, services: Services) {
+  const authGuard = requireAuthentication(services);
+
+  app.get('/api/devices', { preHandler: authGuard }, async (request) => {
+    const auth = authenticatedSession(request);
+    const now = services.now().getTime();
+    const rows = services.sqlite
+      .prepare(
+        `
+      SELECT
+        devices.id,
+        devices.name,
+        devices.browser,
+        devices.operating_system,
+        MIN(sessions.created_at) AS first_login_at,
+        MAX(sessions.last_seen_at) AS last_active_at
+      FROM devices
+      INNER JOIN sessions ON sessions.device_id = devices.id
+      WHERE devices.user_id = ?
+        AND sessions.revoked_at IS NULL
+        AND sessions.expires_at > ?
+      GROUP BY devices.id
+      ORDER BY last_active_at DESC
+    `,
+      )
+      .all(auth.user_id, now) as DeviceListRow[];
+
+    return DeviceListResponseSchema.parse({
+      devices: rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        browser: row.browser,
+        operatingSystem: row.operating_system,
+        isCurrent: row.id === auth.device_id,
+        firstLoginAt: new Date(row.first_login_at).toISOString(),
+        lastActiveAt: new Date(row.last_active_at).toISOString(),
+      })),
+    });
+  });
+
+  app.patch(
+    '/api/devices/:deviceId',
+    { preHandler: authGuard },
+    async (request, reply) => {
+      const auth = authenticatedSession(request);
+      const { deviceId } = DeviceIdParamsSchema.parse(request.params);
+      const body = RenameDeviceRequestSchema.parse(request.body);
+      const result = services.sqlite
+        .prepare(
+          `
+      UPDATE devices SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?
+    `,
+        )
+        .run(body.name, services.now().getTime(), deviceId, auth.user_id);
+      if (!result.changes) {
+        return reply
+          .code(404)
+          .send({ code: 'DEVICE_NOT_FOUND', message: 'Device not found' });
+      }
+      return SuccessResponseSchema.parse({ ok: true });
+    },
+  );
+
+  app.delete(
+    '/api/devices/:deviceId',
+    { preHandler: authGuard },
+    async (request, reply) => {
+      const auth = authenticatedSession(request);
+      const { deviceId } = DeviceIdParamsSchema.parse(request.params);
+      if (deviceId === auth.device_id) {
+        return reply.code(409).send({
+          code: 'CURRENT_DEVICE',
+          message: 'Use logout for the current device',
+        });
+      }
+      services.sqlite.transaction(() => {
+        services.sqlite
+          .prepare(
+            `
+        UPDATE sessions
+        SET revoked_at = ?
+        WHERE device_id = ? AND user_id = ? AND revoked_at IS NULL
+      `,
+          )
+          .run(services.now().getTime(), deviceId, auth.user_id);
+      })();
+      return SuccessResponseSchema.parse({ ok: true });
+    },
+  );
+
+  app.post(
+    '/api/devices/logout-others',
+    { preHandler: authGuard },
+    async (request) => {
+      const auth = authenticatedSession(request);
+      services.sqlite
+        .prepare(
+          `
+      UPDATE sessions
+      SET revoked_at = ?
+      WHERE user_id = ? AND id <> ? AND revoked_at IS NULL
+    `,
+        )
+        .run(services.now().getTime(), auth.user_id, auth.session_id);
+      return SuccessResponseSchema.parse({ ok: true });
+    },
+  );
 }
