@@ -105,6 +105,34 @@ export function createTaskService(deps: ServiceDependencies) {
         return finish(userId, input.id, now, 'upsert');
       })();
     },
+    copyFromSnapshot(userId: string, id: string, snapshot: Task) {
+      return deps.sqlite.transaction(() => {
+        const now = deps.now().getTime();
+        deps.sqlite
+          .prepare(
+            `
+              INSERT INTO tasks (
+                id, user_id, title, subject, default_pomodoro_target,
+                default_timer_preset, notes, archived, version,
+                created_at, updated_at, deleted_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)
+            `,
+          )
+          .run(
+            id,
+            userId,
+            snapshot.title,
+            snapshot.subject,
+            snapshot.defaultPomodoroTarget,
+            snapshot.defaultTimerPreset,
+            snapshot.notes,
+            snapshot.archived ? 1 : 0,
+            now,
+            now,
+          );
+        return finish(userId, id, now, 'upsert');
+      })();
+    },
     list(userId: string, filter: 'active' | 'archived' | 'all' = 'active') {
       const condition =
         filter === 'all'

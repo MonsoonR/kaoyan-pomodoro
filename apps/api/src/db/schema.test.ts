@@ -298,6 +298,38 @@ describe('SQLite schema migrations', () => {
     });
   });
 
+  it('adds resolution_result and rejects malformed non-null JSON', () => {
+    const columns = connection.sqlite
+      .prepare('PRAGMA table_info(conflicts)')
+      .all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain('resolution_result');
+    const now = 1_789_000_000_000;
+    connection.sqlite.exec(`
+      INSERT INTO users (id, singleton_key, username, password_hash, password_changed_at)
+      VALUES ('user-1', 1, 'owner', 'hash', ${now});
+      INSERT INTO devices (id, user_id, name, browser, operating_system, last_active_at)
+      VALUES ('device-1', 'user-1', 'Laptop', 'Chrome', 'Windows', ${now});
+      INSERT INTO conflicts (
+        id,user_id,device_id,entity_type,entity_id,conflict_type,
+        local_operation_id,base_version,server_version,local_payload,
+        server_payload,status,created_at
+      ) VALUES (
+        'conflict-1','user-1','device-1','task','task-1','delete_modify',
+        'operation-1',1,2,'{}','{}','open',${now}
+      );
+    `);
+    expect(() =>
+      connection.sqlite
+        .prepare('UPDATE conflicts SET resolution_result=? WHERE id=?')
+        .run('{not-json', 'conflict-1'),
+    ).toThrow(/CHECK/);
+    expect(
+      connection.sqlite
+        .prepare('SELECT resolution_result FROM conflicts WHERE id=?')
+        .get('conflict-1'),
+    ).toEqual({ resolution_result: null });
+  });
+
   it('rejects duplicate operation IDs and assigns strictly increasing change cursors', () => {
     const now = 1_789_000_000_000;
     connection.sqlite.exec(`

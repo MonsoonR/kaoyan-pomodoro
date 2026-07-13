@@ -264,15 +264,23 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
             'SOURCE_TASK_DELETED',
             'Source task is deleted',
           );
-        if (source.archived)
-          return createConflict(
+        if (source.archived) {
+          if (source.version !== operation.payload.sourceTaskVersion)
+            return createConflict(
+              operation,
+              userId,
+              deviceId,
+              'archive_add_today',
+              source.version,
+              source,
+            );
+          return rejected(
             operation,
-            userId,
-            deviceId,
-            'archive_add_today',
             source.version,
-            source,
+            'SOURCE_TASK_ARCHIVED',
+            'Source task is archived',
           );
+        }
         return applied(
           operation,
           daily.addFromTask(userId, source.id, {
@@ -366,7 +374,7 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
       const complete = operation.operationType === 'complete';
       const alreadyDesired = complete
         ? current.status === 'completed'
-        : current.status !== 'completed';
+        : current.status === 'pending';
       if (alreadyDesired) return applied(operation, current.version);
       if (operation.baseVersion !== current.version)
         return createConflict(

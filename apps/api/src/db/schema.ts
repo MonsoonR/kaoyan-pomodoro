@@ -315,6 +315,10 @@ export const conflicts = sqliteTable(
       .notNull(),
     status: text('status').notNull().default('open'),
     resolution: text('resolution'),
+    resolutionResult: text('resolution_result', { mode: 'json' }).$type<{
+      resolutionRequest: JsonObject;
+      affectedVersions: Record<string, number>;
+    }>(),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(nowInMilliseconds),
@@ -342,6 +346,10 @@ export const conflicts = sqliteTable(
     check(
       'conflicts_payload_check',
       sql`json_valid(${table.localPayload}) AND json_valid(${table.serverPayload})`,
+    ),
+    check(
+      'conflicts_resolution_result_check',
+      sql`${table.resolutionResult} IS NULL OR json_valid(${table.resolutionResult})`,
     ),
   ],
 );

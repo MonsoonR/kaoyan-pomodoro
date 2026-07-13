@@ -1,18 +1,39 @@
 import {
   ConflictListResponseSchema,
+  ConflictResolutionSchema,
   ConflictSchema,
+  DailyTaskSchema,
+  ResolveConflictRequestSchema,
   ResolveConflictResponseSchema,
+  TaskSchema,
   type Conflict,
+  type ConflictType,
+  type ResolvedConflictResult,
   type ResolveConflictRequest,
 } from '@kaoyan/contracts';
 import type Database from 'better-sqlite3';
 import { createDailyTaskService } from '../services/daily-tasks';
-import { EntityNotFoundError } from '../services/errors';
+import {
+  ConflictAlreadyResolvedError,
+  EntityNotFoundError,
+  InvalidConflictResolutionError,
+} from '../services/errors';
 import { createTaskService } from '../services/tasks';
 
 interface Dependencies {
   sqlite: Database.Database;
   now: () => Date;
+  writeResolutionResult?: (
+    sqlite: Database.Database,
+    values: ResolutionResultValues,
+  ) => void;
+}
+interface ResolutionResultValues {
+  id: string;
+  userId: string;
+  resolution: string;
+  resolutionResult: ResolvedConflictResult;
+  resolvedAt: number;
 }
 interface Row {
   id: string;
@@ -26,10 +47,11 @@ interface Row {
   server_payload: string;
   status: 'open' | 'resolved';
   resolution: string | null;
+  resolution_result: string | null;
   created_at: number;
   resolved_at: number | null;
 }
-const select = `SELECT id,entity_type,entity_id,conflict_type,local_operation_id,base_version,server_version,local_payload,server_payload,status,resolution,created_at,resolved_at FROM conflicts`;
+const select = `SELECT id,entity_type,entity_id,conflict_type,local_operation_id,base_version,server_version,local_payload,server_payload,status,resolution,resolution_result,created_at,resolved_at FROM conflicts`;
 function serialize(row: Row): Conflict {
   return ConflictSchema.parse({
     id: row.id,
@@ -43,15 +65,51 @@ function serialize(row: Row): Conflict {
     serverPayload: JSON.parse(row.server_payload),
     status: row.status,
     resolution: row.resolution,
+    resolutionResult:
+      row.resolution_result === null
+        ? null
+        : JSON.parse(row.resolution_result),
     createdAt: new Date(row.created_at).toISOString(),
     resolvedAt:
       row.resolved_at === null ? null : new Date(row.resolved_at).toISOString(),
   });
 }
 
+const legalResolutions: Record<ConflictType, ReadonlySet<string>> = {
+  delete_modify: new Set(['keepServer', 'applyDelete', 'copyAsNew']),
+  complete_restore: new Set(['complete', 'restore']),
+  archive_add_today: new Set([
+    'keepArchived',
+    'addAnyway',
+    'unarchiveAndAdd',
+  ]),
+};
+
+const defaultWriteResolutionResult = (
+  sqlite: Database.Database,
+  values: ResolutionResultValues,
+) => {
+  const result = sqlite
+    .prepare(
+      `UPDATE conflicts
+       SET status='resolved', resolution=?, resolution_result=?, resolved_at=?
+       WHERE id=? AND user_id=? AND status='open'`,
+    )
+    .run(
+      values.resolution,
+      JSON.stringify(values.resolutionResult),
+      values.resolvedAt,
+      values.id,
+      values.userId,
+    );
+  if (result.changes !== 1) throw new Error('Conflict resolution write failed');
+};
+
 export function createConflictService(deps: Dependencies) {
   const tasks = createTaskService(deps),
     daily = createDailyTaskService(deps);
+  const writeResolutionResult =
+    deps.writeResolutionResult ?? defaultWriteResolutionResult;
   const getRow = (userId: string, id: string) =>
     deps.sqlite
       .prepare(`${select} WHERE id=? AND user_id=?`)
@@ -77,11 +135,33 @@ export function createConflictService(deps: Dependencies) {
       return deps.sqlite.transaction(() => {
         const row = getRow(userId, id);
         if (!row) throw new EntityNotFoundError();
-        if (row.status === 'resolved')
+        const normalizedInput = ResolveConflictRequestSchema.parse(input);
+        if (row.status === 'resolved') {
+          if (!row.resolution_result)
+            throw new Error('Resolved conflict is missing its result');
+          const saved = JSON.parse(
+            row.resolution_result,
+          ) as ResolvedConflictResult;
+          if (
+            JSON.stringify(saved.resolutionRequest) !==
+            JSON.stringify(normalizedInput)
+          )
+            throw new ConflictAlreadyResolvedError(
+              ConflictResolutionSchema.parse(
+                row.resolution ?? saved.resolutionRequest.resolution,
+              ),
+              saved,
+            );
           return ResolveConflictResponseSchema.parse({
             conflict: serialize(row),
-            affectedVersions: {},
+            affectedVersions: saved.affectedVersions,
           });
+        }
+        if (!legalResolutions[row.conflict_type].has(normalizedInput.resolution))
+          throw new InvalidConflictResolutionError(
+            row.conflict_type,
+            normalizedInput.resolution,
+          );
         const affected: Record<string, number> = {};
         if (row.conflict_type === 'delete_modify') {
           const current =
@@ -89,40 +169,42 @@ export function createConflictService(deps: Dependencies) {
               ? tasks.getAny(userId, row.entity_id)
               : daily.getAny(userId, row.entity_id);
           if (!current) throw new EntityNotFoundError();
-          if (input.resolution === 'applyDelete' && !current.deletedAt) {
+          if (normalizedInput.resolution === 'applyDelete' && !current.deletedAt) {
             const e =
               row.entity_type === 'task'
                 ? tasks.delete(userId, row.entity_id, current.version)
                 : daily.delete(userId, row.entity_id, current.version);
             affected[e.id] = e.version;
-          } else if (input.resolution === 'copyAsNew') {
-            if (row.entity_type !== 'task')
-              throw new Error('copyAsNew only supports tasks');
-            const snapshot = JSON.parse(row.server_payload) as {
-              title: string;
-              subject: string;
-              defaultPomodoroTarget: number;
-              defaultTimerPreset: '25-5' | '50-10' | 'custom';
-              notes: string | null;
-            };
-            const e = tasks.create(userId, {
-              id: input.newEntityId,
-              title: snapshot.title,
-              subject: snapshot.subject,
-              defaultPomodoroTarget: snapshot.defaultPomodoroTarget,
-              defaultTimerPreset: snapshot.defaultTimerPreset,
-              notes: snapshot.notes,
-            });
+          } else if (normalizedInput.resolution === 'copyAsNew') {
+            const e =
+              row.entity_type === 'task'
+                ? tasks.copyFromSnapshot(
+                    userId,
+                    normalizedInput.newEntityId,
+                    TaskSchema.parse(JSON.parse(row.server_payload)),
+                  )
+                : daily.copyFromSnapshot(
+                    userId,
+                    normalizedInput.newEntityId,
+                    DailyTaskSchema.parse(JSON.parse(row.server_payload)),
+                  );
             affected[e.id] = e.version;
-          } else if (input.resolution !== 'keepServer')
-            throw new Error('Invalid resolution');
+            if (!current.deletedAt) {
+              const deleted =
+                row.entity_type === 'task'
+                  ? tasks.delete(userId, row.entity_id, current.version)
+                  : daily.delete(userId, row.entity_id, current.version);
+              affected[deleted.id] = deleted.version;
+            }
+          }
         } else if (row.conflict_type === 'complete_restore') {
-          if (input.resolution !== 'complete' && input.resolution !== 'restore')
-            throw new Error('Invalid resolution');
           const current = daily.getAny(userId, row.entity_id);
           if (!current || current.deletedAt) throw new EntityNotFoundError();
-          const desired = input.resolution === 'complete';
-          if ((current.status === 'completed') !== desired) {
+          const desired = normalizedInput.resolution === 'complete';
+          const alreadyDesired = desired
+            ? current.status === 'completed'
+            : current.status === 'pending';
+          if (!alreadyDesired) {
             const e = daily.setCompleted(
               userId,
               row.entity_id,
@@ -140,10 +222,13 @@ export function createConflictService(deps: Dependencies) {
           const source = tasks.getAny(userId, payload.sourceTaskId);
           if (!source || source.deletedAt) throw new EntityNotFoundError();
           if (
-            input.resolution === 'addAnyway' ||
-            input.resolution === 'unarchiveAndAdd'
+            normalizedInput.resolution === 'addAnyway' ||
+            normalizedInput.resolution === 'unarchiveAndAdd'
           ) {
-            if (input.resolution === 'unarchiveAndAdd' && source.archived) {
+            if (
+              normalizedInput.resolution === 'unarchiveAndAdd' &&
+              source.archived
+            ) {
               const t = tasks.setArchived(
                 userId,
                 source.id,
@@ -158,15 +243,20 @@ export function createConflictService(deps: Dependencies) {
               sortOrder: payload.sortOrder,
             });
             affected[e.id] = e.version;
-          } else if (input.resolution !== 'keepArchived')
-            throw new Error('Invalid resolution');
+          }
         }
         const now = deps.now().getTime();
-        deps.sqlite
-          .prepare(
-            `UPDATE conflicts SET status='resolved',resolution=?,resolved_at=? WHERE id=? AND user_id=? AND status='open'`,
-          )
-          .run(input.resolution, now, id, userId);
+        const resolutionResult = {
+          resolutionRequest: normalizedInput,
+          affectedVersions: affected,
+        } satisfies ResolvedConflictResult;
+        writeResolutionResult(deps.sqlite, {
+          id,
+          userId,
+          resolution: normalizedInput.resolution,
+          resolutionResult,
+          resolvedAt: now,
+        });
         const resolved = getRow(userId, id);
         if (!resolved) throw new EntityNotFoundError();
         return ResolveConflictResponseSchema.parse({

@@ -457,33 +457,21 @@ export const OperationReceiptSchema = z.union([
     .strict(),
 ]);
 
-export const ConflictSchema = z
-  .object({
-    id: IdSchema,
-    entityType: SyncEntityTypeSchema,
-    entityId: IdSchema,
-    conflictType: z.enum([
-      'delete_modify',
-      'complete_restore',
-      'archive_add_today',
-    ]),
-    localOperationId: IdSchema,
-    baseVersion: z.int().nonnegative(),
-    serverVersion: z.int().positive(),
-    localPayload: PayloadSchema,
-    serverPayload: PayloadSchema,
-    status: z.enum(['open', 'resolved']),
-    resolution: z.string().nullable(),
-    createdAt: TimestampSchema,
-    resolvedAt: TimestampSchema.nullable(),
-  })
-  .strict();
-export const ConflictListResponseSchema = z
-  .object({ conflicts: z.array(ConflictSchema) })
-  .strict();
-export const ConflictIdParamsSchema = z
-  .object({ conflictId: IdSchema })
-  .strict();
+export const ConflictTypeSchema = z.enum([
+  'delete_modify',
+  'complete_restore',
+  'archive_add_today',
+]);
+export const ConflictResolutionSchema = z.enum([
+  'keepServer',
+  'applyDelete',
+  'copyAsNew',
+  'complete',
+  'restore',
+  'keepArchived',
+  'addAnyway',
+  'unarchiveAndAdd',
+]);
 export const ResolveConflictRequestSchema = z.discriminatedUnion('resolution', [
   z
     .object({
@@ -502,6 +490,63 @@ export const ResolveConflictRequestSchema = z.discriminatedUnion('resolution', [
     .strict(),
   z.object({ resolution: z.literal('unarchiveAndAdd') }).strict(),
 ]);
+export const ResolvedConflictResultSchema = z
+  .object({
+    resolutionRequest: ResolveConflictRequestSchema,
+    affectedVersions: z.record(IdSchema, z.int().positive()),
+  })
+  .strict();
+export const InvalidConflictResolutionErrorSchema = z
+  .object({
+    code: z.literal('INVALID_CONFLICT_RESOLUTION'),
+    message: z.literal('Resolution is not valid for this conflict type'),
+    conflictType: ConflictTypeSchema,
+    resolution: ConflictResolutionSchema,
+  })
+  .strict();
+export const ConflictAlreadyResolvedErrorSchema = z
+  .object({
+    code: z.literal('CONFLICT_ALREADY_RESOLVED'),
+    message: z.literal('Conflict was already resolved differently'),
+    resolution: ConflictResolutionSchema,
+    resolutionResult: ResolvedConflictResultSchema,
+  })
+  .strict();
+
+const ConflictBaseSchema = z
+  .object({
+    id: IdSchema,
+    entityType: SyncEntityTypeSchema,
+    entityId: IdSchema,
+    conflictType: ConflictTypeSchema,
+    localOperationId: IdSchema,
+    baseVersion: z.int().nonnegative(),
+    serverVersion: z.int().positive(),
+    localPayload: PayloadSchema,
+    serverPayload: PayloadSchema,
+    createdAt: TimestampSchema,
+  })
+  .strict();
+export const ConflictSchema = z.discriminatedUnion('status', [
+  ConflictBaseSchema.extend({
+    status: z.literal('open'),
+    resolution: z.null(),
+    resolutionResult: z.null(),
+    resolvedAt: z.null(),
+  }).strict(),
+  ConflictBaseSchema.extend({
+    status: z.literal('resolved'),
+    resolution: ConflictResolutionSchema,
+    resolutionResult: ResolvedConflictResultSchema,
+    resolvedAt: TimestampSchema,
+  }).strict(),
+]);
+export const ConflictListResponseSchema = z
+  .object({ conflicts: z.array(ConflictSchema) })
+  .strict();
+export const ConflictIdParamsSchema = z
+  .object({ conflictId: IdSchema })
+  .strict();
 export const ResolveConflictResponseSchema = z
   .object({
     conflict: ConflictSchema,
@@ -564,6 +609,11 @@ export type Settings = z.infer<typeof SettingsSchema>;
 export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
 export type OperationReceipt = z.infer<typeof OperationReceiptSchema>;
 export type Conflict = z.infer<typeof ConflictSchema>;
+export type ConflictType = z.infer<typeof ConflictTypeSchema>;
+export type ConflictResolution = z.infer<typeof ConflictResolutionSchema>;
 export type ResolveConflictRequest = z.infer<
   typeof ResolveConflictRequestSchema
+>;
+export type ResolvedConflictResult = z.infer<
+  typeof ResolvedConflictResultSchema
 >;

@@ -2,6 +2,10 @@ import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 import { ZodError } from 'zod';
+import {
+  ConflictAlreadyResolvedErrorSchema,
+  InvalidConflictResolutionErrorSchema,
+} from '@kaoyan/contracts';
 
 import { generateSessionToken } from './auth/tokens';
 import {
@@ -19,7 +23,12 @@ import { deviceRoutes } from './routes/devices';
 import { studyDataRoutes } from './routes/study-data';
 import { syncRoutes } from './routes/sync';
 import { conflictRoutes } from './routes/conflicts';
-import { EntityNotFoundError, StaleVersionError } from './services/errors';
+import {
+  ConflictAlreadyResolvedError,
+  EntityNotFoundError,
+  InvalidConflictResolutionError,
+  StaleVersionError,
+} from './services/errors';
 import { installOriginGuard } from './security/origin-guard';
 
 const BODY_LIMIT_BYTES = 64 * 1024;
@@ -104,6 +113,24 @@ export async function createApp(options: AppOptions) {
         message: error.message,
         currentVersion: error.currentVersion,
       });
+    if (error instanceof InvalidConflictResolutionError)
+      return reply.code(400).send(
+        InvalidConflictResolutionErrorSchema.parse({
+          code: error.code,
+          message: error.message,
+          conflictType: error.conflictType,
+          resolution: error.resolution,
+        }),
+      );
+    if (error instanceof ConflictAlreadyResolvedError)
+      return reply.code(409).send(
+        ConflictAlreadyResolvedErrorSchema.parse({
+          code: error.code,
+          message: error.message,
+          resolution: error.resolution,
+          resolutionResult: error.resolutionResult,
+        }),
+      );
     if (typeof error === 'object' && error !== null && 'statusCode' in error) {
       if (error.statusCode === 429) {
         return reply

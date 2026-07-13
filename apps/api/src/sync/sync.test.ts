@@ -396,6 +396,200 @@ describe('last write wins and conflicts', () => {
     expect(counts().conflicts).toBe(0);
   });
 });
+describe('restore state and source task version semantics', () => {
+  const createDailyInState = (
+    status: 'pending' | 'active' | 'awaiting_confirmation' | 'completed',
+  ) => {
+    const service = createDailyTaskService(deps());
+    service.createTemporary(user, {
+      id: daily,
+      date: '2026-07-13',
+      title: 'Essay',
+      subject: 'English',
+      pomodoroTarget: 2,
+      timerPreset: '25-5',
+      sortOrder: 0,
+    });
+    if (status === 'completed') service.setCompleted(user, daily, 1, true);
+    else if (status !== 'pending')
+      db.sqlite
+        .prepare('UPDATE daily_tasks SET status=? WHERE id=?')
+        .run(status, daily);
+    return service;
+  };
+  const restore = (baseVersion: number) =>
+    processor().process(
+      op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType: 'restore',
+        baseVersion,
+        payload: {},
+      }),
+      user,
+      device,
+    );
+
+  it('restores active to pending', () => {
+    const service = createDailyInState('active');
+    expect(restore(1)).toMatchObject({ status: 'applied', entityVersion: 2 });
+    expect(service.getAny(user, daily)?.status).toBe('pending');
+  });
+  it('restores awaiting_confirmation to pending', () => {
+    const service = createDailyInState('awaiting_confirmation');
+    expect(restore(1)).toMatchObject({ status: 'applied', entityVersion: 2 });
+    expect(service.getAny(user, daily)?.status).toBe('pending');
+  });
+  it('creates a conflict for stale active restore', () => {
+    const service = createDailyInState('active');
+    service.update(user, daily, { expectedVersion: 1, title: 'Changed' });
+    expect(restore(1)).toMatchObject({ status: 'conflict', entityVersion: 2 });
+    expect(service.getAny(user, daily)?.status).toBe('active');
+  });
+  it('creates a conflict for stale awaiting_confirmation restore', () => {
+    const service = createDailyInState('awaiting_confirmation');
+    service.update(user, daily, { expectedVersion: 1, title: 'Changed' });
+    expect(restore(1)).toMatchObject({ status: 'conflict', entityVersion: 2 });
+    expect(service.getAny(user, daily)?.status).toBe('awaiting_confirmation');
+  });
+  it('treats pending restore as idempotent without a version or change', () => {
+    const service = createDailyInState('pending');
+    const changes = counts().changes;
+    expect(restore(1)).toMatchObject({ status: 'applied', entityVersion: 1 });
+    expect(service.getAny(user, daily)).toMatchObject({
+      status: 'pending',
+      version: 1,
+    });
+    expect(counts().changes).toBe(changes);
+  });
+  it('restores completed to pending and increments its version', () => {
+    const service = createDailyInState('completed');
+    expect(restore(2)).toMatchObject({ status: 'applied', entityVersion: 3 });
+    expect(service.getAny(user, daily)).toMatchObject({
+      status: 'pending',
+      version: 3,
+    });
+  });
+  it('rejects addToToday when the source task is deleted', () => {
+    const tasks = createTaskService(deps());
+    tasks.create(user, {
+      id: task,
+      title: 'Math',
+      subject: 'Algebra',
+      defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5',
+    });
+    tasks.delete(user, task, 1);
+    const result = processor().process(
+      op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType: 'addToToday',
+        payload: {
+          sourceTaskId: task,
+          sourceTaskVersion: 1,
+          date: '2026-07-13',
+          sortOrder: 0,
+        },
+      }),
+      user,
+      device,
+    );
+    expect(result).toMatchObject({
+      status: 'rejected',
+      errorCode: 'SOURCE_TASK_DELETED',
+    });
+  });
+  it('rejects an archived source when sourceTaskVersion is current', () => {
+    const tasks = createTaskService(deps());
+    tasks.create(user, {
+      id: task,
+      title: 'Math',
+      subject: 'Algebra',
+      defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5',
+    });
+    const archived = tasks.setArchived(user, task, 1, true);
+    const result = processor().process(
+      op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType: 'addToToday',
+        payload: {
+          sourceTaskId: task,
+          sourceTaskVersion: archived.version,
+          date: '2026-07-13',
+          sortOrder: 0,
+        },
+      }),
+      user,
+      device,
+    );
+    expect(result).toMatchObject({
+      status: 'rejected',
+      errorCode: 'SOURCE_TASK_ARCHIVED',
+      entityVersion: 2,
+    });
+    expect(counts().conflicts).toBe(0);
+  });
+  it('creates archive_add_today only for a stale archived source', () => {
+    const tasks = createTaskService(deps());
+    tasks.create(user, {
+      id: task,
+      title: 'Math',
+      subject: 'Algebra',
+      defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5',
+    });
+    tasks.setArchived(user, task, 1, true);
+    const result = processor().process(
+      op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType: 'addToToday',
+        payload: {
+          sourceTaskId: task,
+          sourceTaskVersion: 1,
+          date: '2026-07-13',
+          sortOrder: 0,
+        },
+      }),
+      user,
+      device,
+    );
+    expect(result).toMatchObject({ status: 'conflict', entityVersion: 2 });
+  });
+  it('uses the current unarchived snapshot despite ordinary version drift', () => {
+    const tasks = createTaskService(deps());
+    tasks.create(user, {
+      id: task,
+      title: 'Math',
+      subject: 'Algebra',
+      defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5',
+    });
+    tasks.update(user, task, { expectedVersion: 1, title: 'Current title' });
+    const result = processor().process(
+      op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType: 'addToToday',
+        payload: {
+          sourceTaskId: task,
+          sourceTaskVersion: 1,
+          date: '2026-07-13',
+          sortOrder: 0,
+        },
+      }),
+      user,
+      device,
+    );
+    expect(result).toMatchObject({ status: 'applied', entityVersion: 1 });
+    expect(createDailyTaskService(deps()).getAny(user, daily)?.title).toBe(
+      'Current title',
+    );
+  });
+});
 describe('pull and resolution', () => {
   it('paginates cursor in order and validates payload schemas', () => {
     const t = createTaskService(deps());
@@ -509,9 +703,13 @@ describe('pull and resolution', () => {
       user,
       device,
     );
-    createConflictService(deps()).resolve(user, c.conflictId!, {
+    const conflictService = createConflictService(deps());
+    const first = conflictService.resolve(user, c.conflictId!, {
       resolution: 'restore',
     });
+    expect(
+      conflictService.resolve(user, c.conflictId!, { resolution: 'restore' }),
+    ).toEqual(first);
     expect(d.getAny(user, daily)?.status).toBe('pending');
   });
   it('resolves delete_modify with applyDelete', () => {
@@ -527,9 +725,15 @@ describe('pull and resolution', () => {
       user,
       device,
     );
-    createConflictService(deps()).resolve(user, conflict.conflictId!, {
+    const service = createConflictService(deps());
+    const first = service.resolve(user, conflict.conflictId!, {
       resolution: 'applyDelete',
     });
+    const afterFirst = counts();
+    expect(
+      service.resolve(user, conflict.conflictId!, { resolution: 'applyDelete' }),
+    ).toEqual(first);
+    expect(counts()).toEqual(afterFirst);
     expect(
       createTaskService(deps()).getAny(user, task)?.deletedAt,
     ).not.toBeNull();
@@ -548,11 +752,92 @@ describe('pull and resolution', () => {
       device,
     );
     const newId = '77777777-7777-4777-8777-777777777777';
-    createConflictService(deps()).resolve(user, conflict.conflictId!, {
+    const service = createConflictService(deps());
+    const first = service.resolve(user, conflict.conflictId!, {
       resolution: 'copyAsNew',
       newEntityId: newId,
     });
-    expect(createTaskService(deps()).get(user, newId)?.title).toBe('N');
+    expect(first.affectedVersions).toEqual({ [newId]: 1, [task]: 3 });
+    const tasks = createTaskService(deps());
+    expect(tasks.get(user, newId)).toMatchObject({
+      title: 'N',
+      subject: 'Algebra',
+      defaultPomodoroTarget: 4,
+      defaultTimerPreset: '50-10',
+      notes: null,
+    });
+    expect(tasks.getAny(user, task)?.deletedAt).not.toBeNull();
+    const resolutionChanges = db.sqlite
+      .prepare(
+        'SELECT entity_id,change_type FROM sync_changes ORDER BY cursor DESC LIMIT 2',
+      )
+      .all();
+    expect(resolutionChanges).toEqual([
+      { entity_id: task, change_type: 'delete' },
+      { entity_id: newId, change_type: 'upsert' },
+    ]);
+    const afterFirst = counts();
+    expect(
+      service.resolve(user, conflict.conflictId!, {
+        resolution: 'copyAsNew',
+        newEntityId: newId,
+      }),
+    ).toEqual(first);
+    expect(counts()).toEqual(afterFirst);
+  });
+  it('rolls back entity and changes when saving the resolution result fails', () => {
+    const p = processor();
+    p.process(create(), user, device);
+    p.process(
+      op({ operationType: 'update', baseVersion: 1, payload: { title: 'N' } }),
+      user,
+      device,
+    );
+    const conflict = p.process(
+      op({ operationType: 'delete', baseVersion: 1, payload: {} }),
+      user,
+      device,
+    );
+    const before = counts();
+    const service = createConflictService({
+      ...deps(),
+      writeResolutionResult: (sqlite) => {
+        expect(
+          (sqlite
+            .prepare('SELECT deleted_at FROM tasks WHERE id=?')
+            .get(task) as { deleted_at: number | null }).deleted_at,
+        ).not.toBeNull();
+        expect(
+          sqlite
+            .prepare(
+              'SELECT status,resolution,resolution_result FROM conflicts WHERE id=?',
+            )
+            .get(conflict.conflictId!),
+        ).toEqual({
+          status: 'open',
+          resolution: null,
+          resolution_result: null,
+        });
+        throw new Error('resolution result write failed');
+      },
+    });
+    expect(() =>
+      service.resolve(user, conflict.conflictId!, { resolution: 'applyDelete' }),
+    ).toThrow('resolution result write failed');
+    expect(counts()).toEqual(before);
+    expect(createTaskService(deps()).getAny(user, task)?.deletedAt).toBeNull();
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT status,resolution,resolution_result,resolved_at FROM conflicts WHERE id=?',
+        )
+        .get(conflict.conflictId!),
+    ).toEqual({
+      status: 'open',
+      resolution: null,
+      resolution_result: null,
+      resolved_at: null,
+    });
   });
   it('resolves complete_restore with complete', () => {
     const d = createDailyTaskService(deps());
@@ -581,9 +866,13 @@ describe('pull and resolution', () => {
       device,
     );
     expect(changed.version).toBe(2);
-    createConflictService(deps()).resolve(user, conflict.conflictId!, {
+    const service = createConflictService(deps());
+    const first = service.resolve(user, conflict.conflictId!, {
       resolution: 'complete',
     });
+    expect(
+      service.resolve(user, conflict.conflictId!, { resolution: 'complete' }),
+    ).toEqual(first);
     expect(d.getAny(user, daily)?.status).toBe('completed');
   });
   it('resolves archive_add_today with keepArchived, addAnyway, and unarchiveAndAdd', () => {
@@ -621,9 +910,14 @@ describe('pull and resolution', () => {
         user,
         device,
       );
-      conflictService.resolve(user, conflict.conflictId!, {
+      const first = conflictService.resolve(user, conflict.conflictId!, {
         resolution: resolutions[index]!,
       });
+      expect(
+        conflictService.resolve(user, conflict.conflictId!, {
+          resolution: resolutions[index]!,
+        }),
+      ).toEqual(first);
       expect(Boolean(dailyService.getAny(user, dailyId))).toBe(index > 0);
       expect(taskService.getAny(user, sourceId)?.archived).toBe(index < 2);
     }

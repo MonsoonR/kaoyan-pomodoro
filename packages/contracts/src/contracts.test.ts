@@ -12,6 +12,9 @@ import {
   EntityVersionSchema,
   OperationReceiptSchema,
   ConflictSchema,
+  ConflictAlreadyResolvedErrorSchema,
+  InvalidConflictResolutionErrorSchema,
+  ResolvedConflictResultSchema,
   SyncChangeSchema,
   SyncOperationSchema,
 } from './index';
@@ -315,9 +318,46 @@ describe('synchronization payload schemas', () => {
         serverPayload: { id: entityId },
         status: 'open',
         resolution: null,
+        resolutionResult: null,
         createdAt: timestamp,
         resolvedAt: null,
       }).status,
     ).toBe('open');
+  });
+
+  it('strictly validates resolved conflict results and domain errors', () => {
+    const result = {
+      resolutionRequest: {
+        resolution: 'copyAsNew',
+        newEntityId: '028f556e-5bbb-7850-8117-41a14e88b577',
+      },
+      affectedVersions: {
+        [entityId]: 3,
+        '028f556e-5bbb-7850-8117-41a14e88b577': 1,
+      },
+    };
+    expect(ResolvedConflictResultSchema.parse(result)).toEqual(result);
+    expect(
+      InvalidConflictResolutionErrorSchema.parse({
+        code: 'INVALID_CONFLICT_RESOLUTION',
+        message: 'Resolution is not valid for this conflict type',
+        conflictType: 'complete_restore',
+        resolution: 'keepServer',
+      }).code,
+    ).toBe('INVALID_CONFLICT_RESOLUTION');
+    expect(
+      ConflictAlreadyResolvedErrorSchema.parse({
+        code: 'CONFLICT_ALREADY_RESOLVED',
+        message: 'Conflict was already resolved differently',
+        resolution: 'copyAsNew',
+        resolutionResult: result,
+      }).resolutionResult,
+    ).toEqual(result);
+    expect(() =>
+      ResolvedConflictResultSchema.parse({
+        ...result,
+        unexpected: true,
+      }),
+    ).toThrow();
   });
 });

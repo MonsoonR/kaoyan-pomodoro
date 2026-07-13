@@ -180,6 +180,189 @@ describe('sync HTTP API', () => {
     });
     expect(resolved.json().conflict.status).toBe('resolved');
   });
+  it('returns stable 400 responses for every conflict-resolution mismatch without writes', async () => {
+    const user = db.sqlite.prepare('SELECT id FROM users').get() as { id: string };
+    const device = db.sqlite.prepare('SELECT id FROM devices').get() as {
+      id: string;
+    };
+    const conflictTypes = [
+      {
+        id: 'a1000000-0000-4000-8000-000000000001',
+        type: 'delete_modify',
+        entityType: 'task',
+        legal: new Set(['keepServer', 'applyDelete', 'copyAsNew']),
+      },
+      {
+        id: 'a1000000-0000-4000-8000-000000000002',
+        type: 'complete_restore',
+        entityType: 'dailyTask',
+        legal: new Set(['complete', 'restore']),
+      },
+      {
+        id: 'a1000000-0000-4000-8000-000000000003',
+        type: 'archive_add_today',
+        entityType: 'dailyTask',
+        legal: new Set(['keepArchived', 'addAnyway', 'unarchiveAndAdd']),
+      },
+    ] as const;
+    for (const conflict of conflictTypes) {
+      db.sqlite
+        .prepare(
+          `INSERT INTO conflicts (
+            id,user_id,device_id,entity_type,entity_id,conflict_type,
+            local_operation_id,base_version,server_version,local_payload,
+            server_payload,status,created_at
+          ) VALUES (?,?,?,?,?,?,?,1,2,'{}','{}','open',?)`,
+        )
+        .run(
+          conflict.id,
+          user.id,
+          device.id,
+          conflict.entityType,
+          'b1000000-0000-4000-8000-000000000001',
+          conflict.type,
+          `c1000000-0000-4000-8000-${conflict.id.slice(-12)}`,
+          Date.parse('2026-07-13T10:00:00Z'),
+        );
+    }
+    const requests = [
+      { resolution: 'keepServer' },
+      { resolution: 'applyDelete' },
+      {
+        resolution: 'copyAsNew',
+        newEntityId: 'd1000000-0000-4000-8000-000000000001',
+      },
+      { resolution: 'complete' },
+      { resolution: 'restore' },
+      { resolution: 'keepArchived' },
+      { resolution: 'addAnyway' },
+      { resolution: 'unarchiveAndAdd' },
+    ] as const;
+    const before = {
+      tasks: db.sqlite.prepare('SELECT count(*) count FROM tasks').get(),
+      dailyTasks: db.sqlite
+        .prepare('SELECT count(*) count FROM daily_tasks')
+        .get(),
+      changes: db.sqlite
+        .prepare('SELECT count(*) count FROM sync_changes')
+        .get(),
+      receipts: db.sqlite
+        .prepare('SELECT count(*) count FROM sync_operations')
+        .get(),
+    };
+    for (const conflict of conflictTypes) {
+      for (const request of requests.filter(
+        (candidate) => !conflict.legal.has(candidate.resolution),
+      )) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `/api/conflicts/${conflict.id}/resolve`,
+          headers: { origin, 'content-type': 'application/json', cookie },
+          payload: request,
+        });
+        expect(response.statusCode, `${conflict.type}/${request.resolution}`).toBe(
+          400,
+        );
+        expect(response.json()).toEqual({
+          code: 'INVALID_CONFLICT_RESOLUTION',
+          message: 'Resolution is not valid for this conflict type',
+          conflictType: conflict.type,
+          resolution: request.resolution,
+        });
+      }
+    }
+    expect({
+      tasks: db.sqlite.prepare('SELECT count(*) count FROM tasks').get(),
+      dailyTasks: db.sqlite
+        .prepare('SELECT count(*) count FROM daily_tasks')
+        .get(),
+      changes: db.sqlite
+        .prepare('SELECT count(*) count FROM sync_changes')
+        .get(),
+      receipts: db.sqlite
+        .prepare('SELECT count(*) count FROM sync_operations')
+        .get(),
+    }).toEqual(before);
+    expect(
+      db.sqlite
+        .prepare(
+          "SELECT count(*) count FROM conflicts WHERE status='open' AND resolution IS NULL AND resolution_result IS NULL AND resolved_at IS NULL",
+        )
+        .get(),
+    ).toEqual({ count: 3 });
+  });
+  it('returns the saved result with 409 for a different retry or newEntityId', async () => {
+    await push([operation()]);
+    await push([
+      operation({
+        operationType: 'update',
+        baseVersion: 1,
+        payload: { title: 'Server title' },
+      }),
+    ]);
+    const conflictId = (
+      await push([
+        operation({ operationType: 'delete', baseVersion: 1, payload: {} }),
+      ])
+    ).json().receipts[0].conflictId as string;
+    const firstRequest = {
+      resolution: 'copyAsNew',
+      newEntityId: 'e1000000-0000-4000-8000-000000000001',
+    };
+    const first = await app.inject({
+      method: 'POST',
+      url: `/api/conflicts/${conflictId}/resolve`,
+      headers: { origin, 'content-type': 'application/json', cookie },
+      payload: firstRequest,
+    });
+    expect(first.statusCode).toBe(200);
+    const before = {
+      tasks: db.sqlite.prepare('SELECT count(*) count FROM tasks').get(),
+      changes: db.sqlite
+        .prepare('SELECT count(*) count FROM sync_changes')
+        .get(),
+      conflict: db.sqlite
+        .prepare(
+          'SELECT status,resolution,resolution_result,resolved_at FROM conflicts WHERE id=?',
+        )
+        .get(conflictId),
+    };
+    for (const payload of [
+      { resolution: 'applyDelete' },
+      {
+        resolution: 'copyAsNew',
+        newEntityId: 'e1000000-0000-4000-8000-000000000002',
+      },
+    ]) {
+      const retry = await app.inject({
+        method: 'POST',
+        url: `/api/conflicts/${conflictId}/resolve`,
+        headers: { origin, 'content-type': 'application/json', cookie },
+        payload,
+      });
+      expect(retry.statusCode).toBe(409);
+      expect(retry.json()).toEqual({
+        code: 'CONFLICT_ALREADY_RESOLVED',
+        message: 'Conflict was already resolved differently',
+        resolution: 'copyAsNew',
+        resolutionResult: {
+          resolutionRequest: firstRequest,
+          affectedVersions: first.json().affectedVersions,
+        },
+      });
+    }
+    expect({
+      tasks: db.sqlite.prepare('SELECT count(*) count FROM tasks').get(),
+      changes: db.sqlite
+        .prepare('SELECT count(*) count FROM sync_changes')
+        .get(),
+      conflict: db.sqlite
+        .prepare(
+          'SELECT status,resolution,resolution_result,resolved_at FROM conflicts WHERE id=?',
+        )
+        .get(conflictId),
+    }).toEqual(before);
+  });
   it('keeps a finite 768 KiB push body limit', async () => {
     const response = await app.inject({
       method: 'POST',

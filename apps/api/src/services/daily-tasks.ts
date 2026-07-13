@@ -117,6 +117,41 @@ export function createDailyTaskService(deps: ServiceDependencies) {
     createTemporary(u: string, input: CreateDailyTaskRequest) {
       return insert(u, input, null);
     },
+    copyFromSnapshot(u: string, id: string, snapshot: DailyTask) {
+      return deps.sqlite.transaction(() => {
+        const n = deps.now().getTime();
+        deps.sqlite
+          .prepare(
+            `
+              INSERT INTO daily_tasks (
+                id, user_id, source_task_id, date, title, subject,
+                pomodoro_target, pomodoro_completed, timer_preset, status,
+                sort_order, completed_at, version, created_at, updated_at,
+                deleted_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)
+            `,
+          )
+          .run(
+            id,
+            u,
+            snapshot.sourceTaskId,
+            snapshot.date,
+            snapshot.title,
+            snapshot.subject,
+            snapshot.pomodoroTarget,
+            snapshot.pomodoroCompleted,
+            snapshot.timerPreset,
+            snapshot.status,
+            snapshot.sortOrder,
+            snapshot.completedAt === null
+              ? null
+              : new Date(snapshot.completedAt).getTime(),
+            n,
+            n,
+          );
+        return finish(u, id, n, 'upsert');
+      })();
+    },
     addFromTask(
       u: string,
       taskId: string,
