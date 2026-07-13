@@ -751,20 +751,30 @@ describe('pull and resolution', () => {
       user,
       device,
     );
+    const tasks = createTaskService(deps());
+    tasks.update(user, task, {
+      expectedVersion: 2,
+      title: 'Version 3 title',
+      subject: 'Version 3 subject',
+      defaultPomodoroTarget: 7,
+      defaultTimerPreset: 'custom',
+      notes: 'Version 3 notes',
+    });
+    db.sqlite.prepare('UPDATE tasks SET archived=1 WHERE id=?').run(task);
     const newId = '77777777-7777-4777-8777-777777777777';
     const service = createConflictService(deps());
     const first = service.resolve(user, conflict.conflictId!, {
       resolution: 'copyAsNew',
       newEntityId: newId,
     });
-    expect(first.affectedVersions).toEqual({ [newId]: 1, [task]: 3 });
-    const tasks = createTaskService(deps());
+    expect(first.affectedVersions).toEqual({ [newId]: 1, [task]: 4 });
     expect(tasks.get(user, newId)).toMatchObject({
-      title: 'N',
-      subject: 'Algebra',
-      defaultPomodoroTarget: 4,
-      defaultTimerPreset: '50-10',
-      notes: null,
+      title: 'Version 3 title',
+      subject: 'Version 3 subject',
+      defaultPomodoroTarget: 7,
+      defaultTimerPreset: 'custom',
+      notes: 'Version 3 notes',
+      archived: true,
     });
     expect(tasks.getAny(user, task)?.deletedAt).not.toBeNull();
     const resolutionChanges = db.sqlite
@@ -784,6 +794,219 @@ describe('pull and resolution', () => {
       }),
     ).toEqual(first);
     expect(counts()).toEqual(afterFirst);
+  });
+  it('copies the resolution-time DailyTask state and progress before deleting it', () => {
+    const dailyService = createDailyTaskService(deps());
+    dailyService.createTemporary(user, {
+      id: daily,
+      date: '2026-07-13',
+      title: 'Version 1',
+      subject: 'English',
+      pomodoroTarget: 2,
+      timerPreset: '25-5',
+      sortOrder: 0,
+    });
+    dailyService.update(user, daily, {
+      expectedVersion: 1,
+      title: 'Version 2',
+    });
+    const conflict = processor().process(
+      op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType: 'delete',
+        baseVersion: 1,
+        payload: {},
+      }),
+      user,
+      device,
+    );
+    dailyService.update(user, daily, {
+      expectedVersion: 2,
+      title: 'Version 3',
+      subject: 'Current subject',
+      pomodoroTarget: 6,
+      timerPreset: 'custom',
+      sortOrder: 9,
+    });
+    db.sqlite
+      .prepare(
+        "UPDATE daily_tasks SET status='active',pomodoro_completed=3 WHERE id=?",
+      )
+      .run(daily);
+    const newId = '78888888-7777-4777-8777-777777777777';
+    const result = createConflictService(deps()).resolve(
+      user,
+      conflict.conflictId!,
+      { resolution: 'copyAsNew', newEntityId: newId },
+    );
+    expect(result.affectedVersions).toEqual({ [newId]: 1, [daily]: 4 });
+    expect(dailyService.getAny(user, newId)).toMatchObject({
+      title: 'Version 3',
+      subject: 'Current subject',
+      pomodoroTarget: 6,
+      pomodoroCompleted: 3,
+      timerPreset: 'custom',
+      status: 'active',
+      sortOrder: 9,
+      version: 1,
+    });
+    expect(dailyService.getAny(user, daily)).toMatchObject({
+      version: 4,
+    });
+    expect(dailyService.getAny(user, daily)?.deletedAt).not.toBeNull();
+  });
+  it('copies an already-deleted final snapshot without another delete change', () => {
+    const p = processor();
+    p.process(create(), user, device);
+    p.process(
+      op({ operationType: 'update', baseVersion: 1, payload: { title: 'V2' } }),
+      user,
+      device,
+    );
+    const conflict = p.process(
+      op({ operationType: 'delete', baseVersion: 1, payload: {} }),
+      user,
+      device,
+    );
+    const tasks = createTaskService(deps());
+    tasks.update(user, task, { expectedVersion: 2, title: 'Final V3' });
+    tasks.delete(user, task, 3);
+    const changesBeforeResolution = counts().changes;
+    const newId = '78999999-7777-4777-8777-777777777777';
+    const result = createConflictService(deps()).resolve(
+      user,
+      conflict.conflictId!,
+      { resolution: 'copyAsNew', newEntityId: newId },
+    );
+    expect(result.affectedVersions).toEqual({ [newId]: 1, [task]: 4 });
+    expect(tasks.get(user, newId)?.title).toBe('Final V3');
+    expect(counts().changes).toBe(changesBeforeResolution + 1);
+    expect(
+      db.sqlite
+        .prepare(
+          "SELECT count(*) count FROM sync_changes WHERE entity_id=? AND change_type='delete'",
+        )
+        .get(task),
+    ).toEqual({ count: 1 });
+  });
+  it('rejects an occupied copyAsNew ID before modifying the source', () => {
+    const p = processor();
+    p.process(create(), user, device);
+    p.process(
+      op({ operationType: 'update', baseVersion: 1, payload: { title: 'N' } }),
+      user,
+      device,
+    );
+    const conflict = p.process(
+      op({ operationType: 'delete', baseVersion: 1, payload: {} }),
+      user,
+      device,
+    );
+    const targetId = '79999999-7777-4777-8777-777777777777';
+    const tasks = createTaskService(deps());
+    tasks.create(user, {
+      id: targetId,
+      title: 'Occupied',
+      subject: 'Existing',
+      defaultPomodoroTarget: 1,
+      defaultTimerPreset: '25-5',
+    });
+    tasks.delete(user, targetId, 1);
+    const before = counts();
+    try {
+      createConflictService(deps()).resolve(user, conflict.conflictId!, {
+        resolution: 'copyAsNew',
+        newEntityId: targetId,
+      });
+      throw new Error('Expected target collision');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'CONFLICT_RESOLUTION_TARGET_EXISTS',
+        entityId: targetId,
+      });
+    }
+    expect(counts()).toEqual(before);
+    expect(tasks.getAny(user, task)).toMatchObject({
+      title: 'N',
+      version: 2,
+      deletedAt: null,
+    });
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT status,resolution,resolution_result,resolved_at FROM conflicts WHERE id=?',
+        )
+        .get(conflict.conflictId!),
+    ).toEqual({
+      status: 'open',
+      resolution: null,
+      resolution_result: null,
+      resolved_at: null,
+    });
+  });
+  it('rejects an occupied archive_add_today target before modifying its source', () => {
+    const sourceId = '71111111-7777-4777-8777-777777777777';
+    const targetId = '72222222-7777-4777-8777-777777777777';
+    const tasks = createTaskService(deps());
+    tasks.create(user, {
+      id: sourceId,
+      title: 'Archived',
+      subject: 'Existing',
+      defaultPomodoroTarget: 1,
+      defaultTimerPreset: '25-5',
+    });
+    tasks.setArchived(user, sourceId, 1, true);
+    const conflict = processor().process(
+      op({
+        entityId: targetId,
+        entityType: 'dailyTask',
+        operationType: 'addToToday',
+        payload: {
+          sourceTaskId: sourceId,
+          sourceTaskVersion: 1,
+          date: '2026-07-13',
+          sortOrder: 0,
+        },
+      }),
+      user,
+      device,
+    );
+    const dailyService = createDailyTaskService(deps());
+    dailyService.createTemporary(user, {
+      id: targetId,
+      date: '2026-07-13',
+      title: 'Occupied target',
+      subject: 'Existing',
+      pomodoroTarget: 1,
+      timerPreset: '25-5',
+      sortOrder: 0,
+    });
+    dailyService.delete(user, targetId, 1);
+    const before = counts();
+    try {
+      createConflictService(deps()).resolve(user, conflict.conflictId!, {
+        resolution: 'unarchiveAndAdd',
+      });
+      throw new Error('Expected target collision');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'CONFLICT_RESOLUTION_TARGET_EXISTS',
+        entityId: targetId,
+      });
+    }
+    expect(counts()).toEqual(before);
+    expect(tasks.getAny(user, sourceId)).toMatchObject({
+      archived: true,
+      version: 2,
+    });
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT status,resolution_result FROM conflicts WHERE id=?',
+        )
+        .get(conflict.conflictId!),
+    ).toEqual({ status: 'open', resolution_result: null });
   });
   it('rolls back entity and changes when saving the resolution result fails', () => {
     const p = processor();

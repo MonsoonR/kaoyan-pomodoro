@@ -13,6 +13,7 @@ import {
   OperationReceiptSchema,
   ConflictSchema,
   ConflictAlreadyResolvedErrorSchema,
+  ConflictResolutionTargetExistsErrorSchema,
   InvalidConflictResolutionErrorSchema,
   ResolvedConflictResultSchema,
   SyncChangeSchema,
@@ -358,6 +359,33 @@ describe('synchronization payload schemas', () => {
         ...result,
         unexpected: true,
       }),
+    ).toThrow();
+  });
+
+  it('supports strict legacy resolution results and target collision errors', () => {
+    const legacy = {
+      legacy: true,
+      resolution: 'copyAsNew',
+      affectedVersions: {},
+    } as const;
+    expect(ResolvedConflictResultSchema.parse(legacy)).toEqual(legacy);
+    expect(
+      ConflictAlreadyResolvedErrorSchema.parse({
+        code: 'CONFLICT_ALREADY_RESOLVED',
+        message: 'Conflict was already resolved differently',
+        resolution: 'copyAsNew',
+        resolutionResult: legacy,
+      }).resolutionResult,
+    ).toEqual(legacy);
+    expect(
+      ConflictResolutionTargetExistsErrorSchema.parse({
+        code: 'CONFLICT_RESOLUTION_TARGET_EXISTS',
+        message: 'Conflict resolution target already exists',
+        entityId,
+      }).entityId,
+    ).toBe(entityId);
+    expect(() =>
+      ResolvedConflictResultSchema.parse({ ...legacy, unexpected: true }),
     ).toThrow();
   });
 });

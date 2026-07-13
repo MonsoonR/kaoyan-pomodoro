@@ -2,19 +2,22 @@ import {
   ConflictListResponseSchema,
   ConflictResolutionSchema,
   ConflictSchema,
+  CurrentResolvedConflictResultSchema,
   DailyTaskSchema,
+  ResolvedConflictResultSchema,
   ResolveConflictRequestSchema,
   ResolveConflictResponseSchema,
   TaskSchema,
   type Conflict,
   type ConflictType,
-  type ResolvedConflictResult,
+  type CurrentResolvedConflictResult,
   type ResolveConflictRequest,
 } from '@kaoyan/contracts';
 import type Database from 'better-sqlite3';
 import { createDailyTaskService } from '../services/daily-tasks';
 import {
   ConflictAlreadyResolvedError,
+  ConflictResolutionTargetExistsError,
   EntityNotFoundError,
   InvalidConflictResolutionError,
 } from '../services/errors';
@@ -32,7 +35,7 @@ interface ResolutionResultValues {
   id: string;
   userId: string;
   resolution: string;
-  resolutionResult: ResolvedConflictResult;
+  resolutionResult: CurrentResolvedConflictResult;
   resolvedAt: number;
 }
 interface Row {
@@ -139,9 +142,14 @@ export function createConflictService(deps: Dependencies) {
         if (row.status === 'resolved') {
           if (!row.resolution_result)
             throw new Error('Resolved conflict is missing its result');
-          const saved = JSON.parse(
-            row.resolution_result,
-          ) as ResolvedConflictResult;
+          const saved = ResolvedConflictResultSchema.parse(
+            JSON.parse(row.resolution_result),
+          );
+          if ('legacy' in saved)
+            throw new ConflictAlreadyResolvedError(
+              ConflictResolutionSchema.parse(row.resolution),
+              saved,
+            );
           if (
             JSON.stringify(saved.resolutionRequest) !==
             JSON.stringify(normalizedInput)
@@ -162,6 +170,22 @@ export function createConflictService(deps: Dependencies) {
             row.conflict_type,
             normalizedInput.resolution,
           );
+        if (
+          normalizedInput.resolution === 'copyAsNew' &&
+          (row.entity_type === 'task'
+            ? tasks.getAny(userId, normalizedInput.newEntityId)
+            : daily.getAny(userId, normalizedInput.newEntityId))
+        )
+          throw new ConflictResolutionTargetExistsError(
+            normalizedInput.newEntityId,
+          );
+        if (
+          row.conflict_type === 'archive_add_today' &&
+          (normalizedInput.resolution === 'addAnyway' ||
+            normalizedInput.resolution === 'unarchiveAndAdd') &&
+          daily.getAny(userId, row.entity_id)
+        )
+          throw new ConflictResolutionTargetExistsError(row.entity_id);
         const affected: Record<string, number> = {};
         if (row.conflict_type === 'delete_modify') {
           const current =
@@ -181,12 +205,12 @@ export function createConflictService(deps: Dependencies) {
                 ? tasks.copyFromSnapshot(
                     userId,
                     normalizedInput.newEntityId,
-                    TaskSchema.parse(JSON.parse(row.server_payload)),
+                    TaskSchema.parse(current),
                   )
                 : daily.copyFromSnapshot(
                     userId,
                     normalizedInput.newEntityId,
-                    DailyTaskSchema.parse(JSON.parse(row.server_payload)),
+                    DailyTaskSchema.parse(current),
                   );
             affected[e.id] = e.version;
             if (!current.deletedAt) {
@@ -195,7 +219,7 @@ export function createConflictService(deps: Dependencies) {
                   ? tasks.delete(userId, row.entity_id, current.version)
                   : daily.delete(userId, row.entity_id, current.version);
               affected[deleted.id] = deleted.version;
-            }
+            } else affected[current.id] = current.version;
           }
         } else if (row.conflict_type === 'complete_restore') {
           const current = daily.getAny(userId, row.entity_id);
@@ -246,10 +270,10 @@ export function createConflictService(deps: Dependencies) {
           }
         }
         const now = deps.now().getTime();
-        const resolutionResult = {
+        const resolutionResult = CurrentResolvedConflictResultSchema.parse({
           resolutionRequest: normalizedInput,
           affectedVersions: affected,
-        } satisfies ResolvedConflictResult;
+        } satisfies CurrentResolvedConflictResult);
         writeResolutionResult(deps.sqlite, {
           id,
           userId,

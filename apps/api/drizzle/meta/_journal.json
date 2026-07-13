@@ -36,6 +36,13 @@
       "when": 1783912632400,
       "tag": "0004_conflict_resolution_result",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783914009223,
+      "tag": "0005_legacy_conflict_resolution_results",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import { ZodError } from 'zod';
 import {
   ConflictAlreadyResolvedErrorSchema,
+  ConflictResolutionTargetExistsErrorSchema,
   InvalidConflictResolutionErrorSchema,
 } from '@kaoyan/contracts';
 
@@ -25,6 +26,7 @@ import { syncRoutes } from './routes/sync';
 import { conflictRoutes } from './routes/conflicts';
 import {
   ConflictAlreadyResolvedError,
+  ConflictResolutionTargetExistsError,
   EntityNotFoundError,
   InvalidConflictResolutionError,
   StaleVersionError,
@@ -129,6 +131,14 @@ export async function createApp(options: AppOptions) {
           message: error.message,
           resolution: error.resolution,
           resolutionResult: error.resolutionResult,
+        }),
+      );
+    if (error instanceof ConflictResolutionTargetExistsError)
+      return reply.code(409).send(
+        ConflictResolutionTargetExistsErrorSchema.parse({
+          code: error.code,
+          message: error.message,
+          entityId: error.entityId,
         }),
       );
     if (typeof error === 'object' && error !== null && 'statusCode' in error) {

@@ -1,11 +1,19 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openDatabase } from './client';
-import { migrateDatabase } from './migrate';
+import { defaultMigrationsFolder, migrateDatabase } from './migrate';
+import { createConflictService } from '../sync/conflicts';
 
 const requiredTables = [
   'active_timer',
@@ -458,6 +466,149 @@ describe('SQLite schema migrations', () => {
     } finally {
       fileConnection?.close();
       rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('upgrades legacy resolved conflicts from 0003 without replaying them', () => {
+    const partialFolder = mkdtempSync(join(tmpdir(), 'migrations-0003-'));
+    const metaFolder = join(partialFolder, 'meta');
+    mkdirSync(metaFolder);
+    for (const migration of [
+      '0000_unknown_red_wolf.sql',
+      '0001_broad_dakota_north.sql',
+      '0002_wakeful_dark_beast.sql',
+      '0003_kind_skreet.sql',
+    ])
+      copyFileSync(
+        join(defaultMigrationsFolder, migration),
+        join(partialFolder, migration),
+      );
+    const journal = JSON.parse(
+      readFileSync(
+        join(defaultMigrationsFolder, 'meta', '_journal.json'),
+        'utf8',
+      ),
+    ) as { entries: Array<{ idx: number }> };
+    writeFileSync(
+      join(metaFolder, '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, 4) }),
+    );
+
+    const legacy = openDatabase(':memory:');
+    try {
+      migrateDatabase(legacy.db, partialFolder);
+      const now = Date.parse('2026-07-13T10:00:00Z');
+      const userId = '81111111-1111-4111-8111-111111111111';
+      const deviceId = '82222222-2222-4222-8222-222222222222';
+      const applyEntityId = '83333333-3333-4333-8333-333333333333';
+      const copyEntityId = '84444444-4444-4444-8444-444444444444';
+      const applyConflictId = '85555555-5555-4555-8555-555555555555';
+      const copyConflictId = '86666666-6666-4666-8666-666666666666';
+      legacy.sqlite
+        .prepare(
+          `INSERT INTO users(id,singleton_key,username,password_hash,password_changed_at,created_at,updated_at)
+           VALUES (?,1,'legacy','hash',?,?,?)`,
+        )
+        .run(userId, now, now, now);
+      legacy.sqlite
+        .prepare(
+          `INSERT INTO devices(id,user_id,name,browser,operating_system,last_active_at,created_at,updated_at)
+           VALUES (?,?,'Legacy','Chrome','Linux',?,?,?)`,
+        )
+        .run(deviceId, userId, now, now, now);
+      for (const [id, title] of [
+        [applyEntityId, 'Apply source'],
+        [copyEntityId, 'Copy source'],
+      ])
+        legacy.sqlite
+          .prepare(
+            `INSERT INTO tasks(
+              id,user_id,title,subject,default_pomodoro_target,
+              default_timer_preset,notes,archived,version,created_at,
+              updated_at,deleted_at
+            ) VALUES (?,? ,?,'Legacy',1,'25-5',NULL,0,2,?,?,NULL)`,
+          )
+          .run(id, userId, title, now, now);
+      const insertConflict = legacy.sqlite.prepare(
+        `INSERT INTO conflicts(
+          id,user_id,device_id,entity_type,entity_id,conflict_type,
+          local_operation_id,base_version,server_version,local_payload,
+          server_payload,status,resolution,created_at,resolved_at
+        ) VALUES (?,?,?,'task',?,'delete_modify',?,1,2,'{}','{}','resolved',?,?,?)`,
+      );
+      insertConflict.run(
+        applyConflictId,
+        userId,
+        deviceId,
+        applyEntityId,
+        '87777777-7777-4777-8777-777777777777',
+        'applyDelete',
+        now,
+        now,
+      );
+      insertConflict.run(
+        copyConflictId,
+        userId,
+        deviceId,
+        copyEntityId,
+        '88888888-8888-4888-8888-888888888888',
+        'copyAsNew',
+        now,
+        now,
+      );
+
+      migrateDatabase(legacy.db);
+      const service = createConflictService({
+        sqlite: legacy.sqlite,
+        now: () => new Date(now),
+      });
+      expect(service.list(userId).conflicts).toHaveLength(2);
+      expect(service.get(userId, applyConflictId).resolutionResult).toEqual({
+        legacy: true,
+        resolution: 'applyDelete',
+        affectedVersions: {},
+      });
+      expect(service.get(userId, copyConflictId).resolutionResult).toEqual({
+        legacy: true,
+        resolution: 'copyAsNew',
+        affectedVersions: {},
+      });
+      for (const [conflictId, request] of [
+        [applyConflictId, { resolution: 'applyDelete' as const }],
+        [
+          copyConflictId,
+          {
+            resolution: 'copyAsNew' as const,
+            newEntityId: '89999999-9999-4999-8999-999999999999',
+          },
+        ],
+      ] as const) {
+        try {
+          service.resolve(userId, conflictId, request);
+          throw new Error('Expected legacy resolution retry to be rejected');
+        } catch (error) {
+          expect(error).toMatchObject({
+            code: 'CONFLICT_ALREADY_RESOLVED',
+            resolutionResult: { legacy: true },
+          });
+        }
+      }
+      expect(
+        legacy.sqlite.prepare('SELECT count(*) count FROM sync_changes').get(),
+      ).toEqual({ count: 0 });
+      expect(
+        legacy.sqlite
+          .prepare(
+            'SELECT count(*) count FROM tasks WHERE deleted_at IS NULL AND version=2',
+          )
+          .get(),
+      ).toEqual({ count: 2 });
+      expect(legacy.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
+    } finally {
+      legacy.close();
+      rmSync(partialFolder, { force: true, recursive: true });
     }
   });
 });

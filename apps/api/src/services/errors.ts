@@ -37,3 +37,10 @@ export class ConflictAlreadyResolvedError extends Error {
     super('Conflict was already resolved differently');
   }
 }
+
+export class ConflictResolutionTargetExistsError extends Error {
+  readonly code = 'CONFLICT_RESOLUTION_TARGET_EXISTS';
+  constructor(readonly entityId: string) {
+    super('Conflict resolution target already exists');
+  }
+}

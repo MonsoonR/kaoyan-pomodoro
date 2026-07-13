@@ -363,6 +363,125 @@ describe('sync HTTP API', () => {
         .get(conflictId),
     }).toEqual(before);
   });
+  it('returns stable 409 responses when conflict-resolution target IDs are occupied', async () => {
+    await push([operation()]);
+    await push([
+      operation({
+        operationType: 'update',
+        baseVersion: 1,
+        payload: { title: 'Server title' },
+      }),
+    ]);
+    const copyConflictId = (
+      await push([
+        operation({ operationType: 'delete', baseVersion: 1, payload: {} }),
+      ])
+    ).json().receipts[0].conflictId as string;
+    const copyTargetId = 'f1000000-0000-4000-8000-000000000001';
+    await push([operation({ entityId: copyTargetId })]);
+    const beforeCopy = db.sqlite
+      .prepare('SELECT count(*) count FROM sync_changes')
+      .get();
+    const copyResponse = await app.inject({
+      method: 'POST',
+      url: `/api/conflicts/${copyConflictId}/resolve`,
+      headers: { origin, 'content-type': 'application/json', cookie },
+      payload: { resolution: 'copyAsNew', newEntityId: copyTargetId },
+    });
+    expect(copyResponse.statusCode).toBe(409);
+    expect(copyResponse.json()).toEqual({
+      code: 'CONFLICT_RESOLUTION_TARGET_EXISTS',
+      message: 'Conflict resolution target already exists',
+      entityId: copyTargetId,
+    });
+    expect(
+      db.sqlite.prepare('SELECT count(*) count FROM sync_changes').get(),
+    ).toEqual(beforeCopy);
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT status,resolution_result FROM conflicts WHERE id=?',
+        )
+        .get(copyConflictId),
+    ).toEqual({ status: 'open', resolution_result: null });
+
+    const sourceId = 'f2000000-0000-4000-8000-000000000001';
+    const dailyTargetId = 'f2000000-0000-4000-8000-000000000002';
+    await push([operation({ entityId: sourceId })]);
+    await push([
+      operation({
+        entityId: sourceId,
+        operationType: 'archive',
+        baseVersion: 1,
+        payload: {},
+      }),
+    ]);
+    const addConflictId = (
+      await push([
+        operation({
+          entityId: dailyTargetId,
+          entityType: 'dailyTask',
+          operationType: 'addToToday',
+          baseVersion: 0,
+          payload: {
+            sourceTaskId: sourceId,
+            sourceTaskVersion: 1,
+            date: '2026-07-13',
+            sortOrder: 0,
+          },
+        }),
+      ])
+    ).json().receipts[0].conflictId as string;
+    await push([
+      operation({
+        entityId: dailyTargetId,
+        entityType: 'dailyTask',
+        operationType: 'create',
+        baseVersion: 0,
+        payload: {
+          sourceTaskId: null,
+          date: '2026-07-13',
+          title: 'Occupied',
+          subject: 'Existing',
+          pomodoroTarget: 1,
+          timerPreset: '25-5',
+          sortOrder: 0,
+        },
+      }),
+    ]);
+    const beforeAdd = db.sqlite
+      .prepare('SELECT count(*) count FROM sync_changes')
+      .get();
+    const addResponse = await app.inject({
+      method: 'POST',
+      url: `/api/conflicts/${addConflictId}/resolve`,
+      headers: { origin, 'content-type': 'application/json', cookie },
+      payload: { resolution: 'unarchiveAndAdd' },
+    });
+    expect(addResponse.statusCode).toBe(409);
+    expect(addResponse.json()).toEqual({
+      code: 'CONFLICT_RESOLUTION_TARGET_EXISTS',
+      message: 'Conflict resolution target already exists',
+      entityId: dailyTargetId,
+    });
+    expect(
+      db.sqlite.prepare('SELECT count(*) count FROM sync_changes').get(),
+    ).toEqual(beforeAdd);
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT archived,version FROM tasks WHERE id=?',
+        )
+        .get(sourceId),
+    ).toEqual({ archived: 1, version: 2 });
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT status,resolution_result FROM conflicts WHERE id=?',
+        )
+        .get(addConflictId),
+    ).toEqual({ status: 'open', resolution_result: null });
+  });
   it('keeps a finite 768 KiB push body limit', async () => {
     const response = await app.inject({
       method: 'POST',

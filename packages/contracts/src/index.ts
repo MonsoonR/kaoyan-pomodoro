@@ -490,12 +490,23 @@ export const ResolveConflictRequestSchema = z.discriminatedUnion('resolution', [
     .strict(),
   z.object({ resolution: z.literal('unarchiveAndAdd') }).strict(),
 ]);
-export const ResolvedConflictResultSchema = z
+export const CurrentResolvedConflictResultSchema = z
   .object({
     resolutionRequest: ResolveConflictRequestSchema,
     affectedVersions: z.record(IdSchema, z.int().positive()),
   })
   .strict();
+export const LegacyResolvedConflictResultSchema = z
+  .object({
+    legacy: z.literal(true),
+    resolution: ConflictResolutionSchema,
+    affectedVersions: z.record(IdSchema, z.int().positive()),
+  })
+  .strict();
+export const ResolvedConflictResultSchema = z.union([
+  CurrentResolvedConflictResultSchema,
+  LegacyResolvedConflictResultSchema,
+]);
 export const InvalidConflictResolutionErrorSchema = z
   .object({
     code: z.literal('INVALID_CONFLICT_RESOLUTION'),
@@ -510,6 +521,13 @@ export const ConflictAlreadyResolvedErrorSchema = z
     message: z.literal('Conflict was already resolved differently'),
     resolution: ConflictResolutionSchema,
     resolutionResult: ResolvedConflictResultSchema,
+  })
+  .strict();
+export const ConflictResolutionTargetExistsErrorSchema = z
+  .object({
+    code: z.literal('CONFLICT_RESOLUTION_TARGET_EXISTS'),
+    message: z.literal('Conflict resolution target already exists'),
+    entityId: IdSchema,
   })
   .strict();
 
@@ -616,4 +634,7 @@ export type ResolveConflictRequest = z.infer<
 >;
 export type ResolvedConflictResult = z.infer<
   typeof ResolvedConflictResultSchema
+>;
+export type CurrentResolvedConflictResult = z.infer<
+  typeof CurrentResolvedConflictResultSchema
 >;
