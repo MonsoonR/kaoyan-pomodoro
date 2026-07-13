@@ -1,8 +1,9 @@
-import type { CurrentSession } from '@kaoyan/contracts';
+import { CurrentSessionSchema, type CurrentSession } from '@kaoyan/contracts';
 import { createSyncDatabase, type SyncDatabase } from '../db/database';
+import type { MetadataRow } from '../db/types';
 import { createApiClient } from '../sync/api-client';
 import { SyncEngine } from '../sync/engine';
-import { AuthRequiredError, NetworkError } from '../sync/errors';
+import { AuthRequiredError } from '../sync/errors';
 import { OfflineOperationQueue } from '../sync/queue';
 import { SyncScheduler } from '../sync/scheduler';
 import type { AccountApiClient, SyncStatusSnapshot } from '../sync/types';
@@ -29,6 +30,7 @@ interface StatusLike {
 
 interface EngineLike {
   status: StatusLike;
+  pauseForAuthentication?(): void;
   resumeAfterAuthentication?(): Promise<void>;
   manualSync?(): Promise<void>;
   close?(): Promise<void>;
@@ -70,6 +72,7 @@ export class AppRuntime {
   private disposed = false;
   private startPromise: Promise<void> | null = null;
   private disposePromise: Promise<void> | null = null;
+  private sessionRecoveryPromise: Promise<void> | null = null;
   private unsubscribeStatus: (() => void) | null = null;
 
   constructor(dependencies: AppRuntimeDependencies) {
@@ -144,6 +147,7 @@ export class AppRuntime {
   }
 
   async authenticationRequired(): Promise<void> {
+    this.engine.pauseForAuthentication?.();
     const userId = this.snapshot.activeUserId;
     if (userId) {
       const metadata = await this.database.getOrCreateMetadata(userId);
@@ -165,58 +169,91 @@ export class AppRuntime {
   private async start(): Promise<void> {
     await this.database.open();
     const activeUserId = await this.database.getActiveUserId();
-    let username: string | null = null;
+    let metadata: MetadataRow | null = null;
     if (activeUserId) {
-      const metadata = await this.database.getOrCreateMetadata(activeUserId);
-      username = metadata.username;
-      this.update({ activeUserId, username });
+      metadata = await this.database.getOrCreateMetadata(activeUserId);
+      this.update({
+        activeUserId,
+        username: metadata.username,
+        session: restoreSessionSummary(metadata),
+      });
       this.queueFor(activeUserId);
+      if (metadata.authState === 'required') {
+        this.engine.pauseForAuthentication?.();
+        this.update({
+          authMode: 'authRequired',
+          session: null,
+          firstLoginOffline: false,
+        });
+      }
     }
     this.unsubscribeStatus = this.engine.status.subscribe(() => {
       const phase = this.engine.status.getSnapshot().phase;
       if (phase === 'authRequired') {
+        this.engine.pauseForAuthentication?.();
         this.update({
           authMode: this.snapshot.activeUserId ? 'authRequired' : 'login',
+          session: null,
           firstLoginOffline: false,
         });
       } else if (phase === 'offline') {
+        if (this.snapshot.authMode === 'authRequired') return;
         this.update({
           authMode: this.snapshot.activeUserId ? 'offline' : 'login',
           firstLoginOffline: !this.snapshot.activeUserId,
         });
-      } else if (
-        phase === 'synced' &&
-        this.snapshot.session
-      ) {
-        this.update({ authMode: 'authenticated', firstLoginOffline: false });
-      }
+      } else if (phase === 'synced') this.recoverSessionAfterSync();
     });
-    try {
-      const session = await this.api.getCurrentSession();
-      await this.activateSession(session);
-    } catch (error) {
-      if (error instanceof NetworkError) {
-        this.update({
-          authMode: activeUserId ? 'offline' : 'login',
-          firstLoginOffline: !activeUserId,
-        });
-      } else if (error instanceof AuthRequiredError) {
-        if (activeUserId) {
-          const metadata = await this.database.getOrCreateMetadata(activeUserId);
-          await this.database.metadata.put({ ...metadata, authState: 'required' });
+    if (metadata?.authState !== 'required') {
+      try {
+        const session = await this.api.getCurrentSession();
+        await this.activateSession(session);
+      } catch (error) {
+        if (error instanceof AuthRequiredError) {
+          if (activeUserId) await this.authenticationRequired();
+          else this.update({
+            authMode: 'login', session: null, firstLoginOffline: false,
+          });
+        } else {
+          this.update({
+            authMode: activeUserId ? 'offline' : 'login',
+            firstLoginOffline: !activeUserId,
+          });
         }
-        this.update({
-          authMode: activeUserId ? 'authRequired' : 'login',
-          firstLoginOffline: false,
-        });
-      } else {
-        this.update({
-          authMode: activeUserId ? 'offline' : 'login',
-          firstLoginOffline: !activeUserId,
-        });
       }
     }
     if (!this.disposed) this.scheduler.start();
+  }
+
+  private recoverSessionAfterSync(): void {
+    if (
+      this.sessionRecoveryPromise ||
+      this.disposed ||
+      !this.snapshot.activeUserId ||
+      this.snapshot.authMode === 'authRequired'
+    ) return;
+    const activeUserId = this.snapshot.activeUserId;
+    this.sessionRecoveryPromise = (async () => {
+      try {
+        const session = await this.api.getCurrentSession();
+        if (
+          this.disposed ||
+          this.snapshot.authMode === 'authRequired' ||
+          this.snapshot.activeUserId !== activeUserId
+        ) return;
+        await this.activateSession(session);
+      } catch (error) {
+        if (this.disposed) return;
+        if (error instanceof AuthRequiredError) {
+          await this.authenticationRequired();
+        } else if (this.snapshot.authMode !== 'authRequired') {
+          this.update({
+            authMode: this.snapshot.activeUserId ? 'offline' : 'login',
+            firstLoginOffline: !this.snapshot.activeUserId,
+          });
+        }
+      }
+    })().finally(() => { this.sessionRecoveryPromise = null; });
   }
 
   private async activateSession(session: CurrentSession): Promise<void> {
@@ -258,6 +295,17 @@ export class AppRuntime {
     if (this.engine.close) await this.engine.close();
     else this.database.close();
   }
+}
+
+function restoreSessionSummary(metadata: MetadataRow): CurrentSession | null {
+  if (metadata.authState !== 'authenticated') return null;
+  const parsed = CurrentSessionSchema.safeParse({
+    user: { id: metadata.userId, username: metadata.username },
+    deviceId: metadata.deviceId,
+    deviceName: metadata.deviceName,
+    expiresAt: metadata.sessionExpiresAt,
+  });
+  return parsed.success ? parsed.data : null;
 }
 
 export function createBrowserRuntime(): AppRuntime {

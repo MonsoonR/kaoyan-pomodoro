@@ -19,8 +19,9 @@ describe('application runtime lifecycle', () => {
   ) {
     const status = new SyncStatusStore();
     const resumeAfterAuthentication = vi.fn(async () => undefined);
+    const pauseForAuthentication = vi.fn();
     const api = {
-      getCurrentSession,
+      getCurrentSession: vi.fn(getCurrentSession),
       login: vi.fn(async () => session()),
       logout: vi.fn(async () => ({ ok: true as const })),
     };
@@ -28,10 +29,15 @@ describe('application runtime lifecycle', () => {
     const runtime = new AppRuntime({
       database,
       api: api as never,
-      engine: { status, resumeAfterAuthentication } as never,
+      engine: {
+        status, resumeAfterAuthentication, pauseForAuthentication,
+      } as never,
       scheduler,
     });
-    return { runtime, api, resumeAfterAuthentication };
+    return {
+      runtime, api, status, scheduler,
+      resumeAfterAuthentication, pauseForAuthentication,
+    };
   }
 
   it('opens and starts only once across repeated StrictMode-style leases', async () => {
@@ -118,6 +124,181 @@ describe('application runtime lifecycle', () => {
     expect((await database.replicas.get(
       replicaKey(USER_A, 'task', TASK_ID),
     ))?.projectedValue).toMatchObject({ title: 'Retained task' });
+    release();
+    await setup.runtime.closed();
+  });
+
+  it('keeps persisted authRequired authoritative across an offline restart', async () => {
+    const database = createSyncDatabase(`runtime-required-${crypto.randomUUID()}`);
+    databases.push(database);
+    await database.open();
+    await database.setActiveUser(USER_A);
+    await database.metadata.update(USER_A, {
+      authState: 'required',
+      username: 'learner',
+      deviceId: '00000000-0000-4000-8000-000000000003',
+      deviceName: 'Laptop',
+      sessionExpiresAt: '2026-07-14T04:00:00.000Z',
+      cursor: 7,
+    });
+    const queue = new (await import('../sync/queue')).OfflineOperationQueue(
+      database,
+      USER_A,
+      { now: () => new Date(NOW) },
+    );
+    const operation = await queue.createTask(TASK_ID, {
+      title: 'Persisted task', subject: 'Math', defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5', notes: null,
+    });
+    database.close();
+
+    const setup = runtimeWith(database, async () => { throw new NetworkError(); });
+    const release = setup.runtime.acquire();
+    await setup.runtime.ready();
+
+    expect(setup.runtime.getSnapshot()).toMatchObject({
+      authMode: 'authRequired', activeUserId: USER_A,
+      username: 'learner', session: null,
+    });
+    expect(setup.api.getCurrentSession).not.toHaveBeenCalled();
+    expect(setup.pauseForAuthentication).toHaveBeenCalledTimes(1);
+    expect(setup.scheduler.start).toHaveBeenCalledTimes(1);
+    setup.status.update({ phase: 'offline' });
+    expect(setup.runtime.getSnapshot().authMode).toBe('authRequired');
+    expect((await database.operations.get(operation.sequence ?? 0))?.operationId)
+      .toBe(operation.operationId);
+    expect((await database.replicas.get(replicaKey(USER_A, 'task', TASK_ID)))
+      ?.projectedValue).toMatchObject({ title: 'Persisted task' });
+    expect((await database.metadata.get(USER_A))?.cursor).toBe(7);
+
+    await setup.runtime.login('learner', 'secure password');
+    expect(setup.resumeAfterAuthentication).toHaveBeenCalledTimes(1);
+    expect((await database.operations.get(operation.sequence ?? 0))?.operationId)
+      .toBe(operation.operationId);
+    release();
+    await setup.runtime.closed();
+  });
+
+  it('keeps logout authoritative when the same database restarts offline', async () => {
+    const database = createSyncDatabase(`runtime-logout-${crypto.randomUUID()}`);
+    databases.push(database);
+    const first = runtimeWith(database, async () => session());
+    const releaseFirst = first.runtime.acquire();
+    await first.runtime.ready();
+    const operation = await first.runtime.queueFor(USER_A).createTask(TASK_ID, {
+      title: 'Logged-out task', subject: 'Math', defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5', notes: null,
+    });
+    await first.runtime.logout();
+    releaseFirst();
+    await first.runtime.closed();
+
+    const restarted = runtimeWith(database, async () => { throw new NetworkError(); });
+    const releaseRestarted = restarted.runtime.acquire();
+    await restarted.runtime.ready();
+    expect(restarted.runtime.getSnapshot()).toMatchObject({
+      authMode: 'authRequired', activeUserId: USER_A, session: null,
+    });
+    expect((await database.operations.get(operation.sequence ?? 0))?.operationId)
+      .toBe(operation.operationId);
+    expect((await database.replicas.get(replicaKey(USER_A, 'task', TASK_ID)))
+      ?.projectedValue).toMatchObject({ title: 'Logged-out task' });
+    releaseRestarted();
+    await restarted.runtime.closed();
+  });
+
+  it('restores and refreshes a persisted session after offline startup recovers', async () => {
+    const database = createSyncDatabase(`runtime-recovery-${crypto.randomUUID()}`);
+    databases.push(database);
+    await database.open();
+    await database.setActiveUser(USER_A);
+    const persisted = session();
+    await database.metadata.update(USER_A, {
+      authState: 'authenticated',
+      username: persisted.user.username,
+      deviceId: persisted.deviceId,
+      deviceName: 'Old laptop name',
+      sessionExpiresAt: persisted.expiresAt,
+    });
+    database.close();
+    const refreshed = {
+      ...persisted,
+      deviceName: 'Renamed laptop',
+      expiresAt: '2026-07-15T04:00:00.000Z',
+    };
+    let request = 0;
+    const setup = runtimeWith(database, async () => {
+      request += 1;
+      if (request === 1) throw new NetworkError();
+      return refreshed;
+    });
+    const open = vi.spyOn(database, 'open');
+    const release = setup.runtime.acquire();
+    await setup.runtime.ready();
+    expect(setup.runtime.getSnapshot()).toMatchObject({
+      authMode: 'offline', session: {
+        deviceName: 'Old laptop name', expiresAt: persisted.expiresAt,
+      },
+    });
+
+    setup.status.update({ phase: 'synced' });
+    await vi.waitFor(() => {
+      expect(setup.runtime.getSnapshot()).toMatchObject({
+        authMode: 'authenticated', session: refreshed,
+      });
+    });
+    expect(await database.metadata.get(USER_A)).toMatchObject({
+      authState: 'authenticated',
+      username: refreshed.user.username,
+      deviceId: refreshed.deviceId,
+      deviceName: refreshed.deviceName,
+      sessionExpiresAt: refreshed.expiresAt,
+    });
+    expect(setup.scheduler.start).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledTimes(1);
+    release();
+    await setup.runtime.closed();
+  });
+
+  it('requires authentication when recovery validation returns 401', async () => {
+    const database = createSyncDatabase(`runtime-recovery-401-${crypto.randomUUID()}`);
+    databases.push(database);
+    await database.open();
+    await database.setActiveUser(USER_A);
+    const persisted = session();
+    await database.metadata.update(USER_A, {
+      authState: 'authenticated', username: persisted.user.username,
+      deviceId: persisted.deviceId, deviceName: persisted.deviceName,
+      sessionExpiresAt: persisted.expiresAt, cursor: 11,
+    });
+    const operation = await new (await import('../sync/queue')).OfflineOperationQueue(
+      database,
+      USER_A,
+      { now: () => new Date(NOW) },
+    ).createTask(TASK_ID, {
+      title: '401 retained task', subject: 'Math', defaultPomodoroTarget: 2,
+      defaultTimerPreset: '25-5', notes: null,
+    });
+    database.close();
+    let request = 0;
+    const setup = runtimeWith(database, async () => {
+      request += 1;
+      if (request === 1) throw new NetworkError();
+      throw new AuthRequiredError();
+    });
+    const release = setup.runtime.acquire();
+    await setup.runtime.ready();
+    setup.status.update({ phase: 'synced' });
+    await vi.waitFor(() => {
+      expect(setup.runtime.getSnapshot()).toMatchObject({
+        authMode: 'authRequired', session: null,
+      });
+    });
+    expect((await database.operations.get(operation.sequence ?? 0))?.operationId)
+      .toBe(operation.operationId);
+    expect((await database.replicas.get(replicaKey(USER_A, 'task', TASK_ID)))
+      ?.projectedValue).toMatchObject({ title: '401 retained task' });
+    expect((await database.metadata.get(USER_A))?.cursor).toBe(11);
     release();
     await setup.runtime.closed();
   });

@@ -12,7 +12,7 @@ import {
   SyncClientError,
 } from '../../sync/errors';
 import { SyncStatusStore } from '../../sync/status';
-import { session } from '../../test/fixtures';
+import { session, USER_A } from '../../test/fixtures';
 import { AuthExperience } from './AuthExperience';
 
 describe('authentication experience', () => {
@@ -39,7 +39,7 @@ describe('authentication experience', () => {
       engine: { status: new SyncStatusStore(), resumeAfterAuthentication } as never,
       scheduler: { start: vi.fn(), stop: vi.fn() },
     });
-    return { runtime, api, resumeAfterAuthentication };
+    return { runtime, api, database, resumeAfterAuthentication };
   }
 
   it.each([
@@ -68,6 +68,29 @@ describe('authentication experience', () => {
     await waitFor(() => expect(screen.getByText('应用内容')).toBeTruthy());
     expect(api.login).toHaveBeenCalledWith('learner', 'secure password');
     expect(resumeAfterAuthentication).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await runtime.closed();
+  });
+
+  it('keeps the persisted reauthentication dialog open on Escape', async () => {
+    const { runtime, database, api } = setup();
+    await database.open();
+    await database.setActiveUser(USER_A);
+    await database.metadata.update(USER_A, {
+      authState: 'required', username: 'learner',
+    });
+    database.close();
+    const user = userEvent.setup();
+    const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
+    const dialog = await screen.findByRole('dialog', { name: '需要重新登录' });
+    const password = screen.getByLabelText('再次输入密码');
+    await user.click(password);
+    await user.type(password, 'not submitted');
+    expect(document.activeElement).toBe(password);
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog', { name: '需要重新登录' })).toBe(dialog);
+    expect(document.activeElement).toBe(password);
+    expect(api.getCurrentSession).not.toHaveBeenCalled();
     view.unmount();
     await runtime.closed();
   });

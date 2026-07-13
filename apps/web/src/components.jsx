@@ -14,19 +14,31 @@ export function Modal({ open, title, children, onClose, size = 'medium', dismiss
   const titleId = useId();
   const ref = useRef(null);
   const returnFocusRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const dismissibleRef = useRef(dismissible);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+    dismissibleRef.current = dismissible;
+  }, [dismissible, onClose]);
   useEffect(() => {
     if (!open) return undefined;
     returnFocusRef.current = document.activeElement;
     const handler = (event) => {
-      if (dismissible && event.key === 'Escape') onClose();
+      if (dismissibleRef.current && event.key === 'Escape') {
+        onCloseRef.current();
+      }
     };
     document.addEventListener('keydown', handler);
     queueMicrotask(() => ref.current?.focus());
     return () => {
       document.removeEventListener('keydown', handler);
-      queueMicrotask(() => returnFocusRef.current?.focus?.());
+      const returnFocus = returnFocusRef.current;
+      queueMicrotask(() => {
+        if (!returnFocus?.isConnected) return;
+        try { returnFocus.focus?.(); } catch { /* the trigger may be gone */ }
+      });
     };
-  }, [open, dismissible, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={(event) => dismissible && event.target === event.currentTarget && onClose()}>

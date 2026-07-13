@@ -134,4 +134,55 @@ describe('conflict center', () => {
     release();
     await runtime.closed();
   });
+
+  it('keeps radio focus through rerenders and restores the opening trigger on cancel', async () => {
+    const conflict = openConflict('delete_modify');
+    const database = createSyncDatabase(`conflict-focus-${crypto.randomUUID()}`);
+    databases.push(database);
+    const runtime = new AppRuntime({
+      database,
+      api: { getCurrentSession: vi.fn(async () => session()) } as never,
+      engine: { status: new SyncStatusStore() } as never,
+      scheduler: { start: vi.fn(), stop: vi.fn(), manualSync: vi.fn() },
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    const user = userEvent.setup();
+    const view = render(<RuntimeProvider runtime={runtime}><ConflictCenter conflicts={[conflict]} /></RuntimeProvider>);
+    const trigger = screen.getByRole('button', { name: '查看并解决' });
+    await user.click(trigger);
+    const radio = screen.getByRole('radio', { name: /确认删除/ });
+    await user.click(radio);
+    expect(document.activeElement).toBe(radio);
+
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    view.unmount();
+    release();
+    await runtime.closed();
+  });
+
+  it('restores the opening trigger when Escape closes the dialog', async () => {
+    const conflict = openConflict('delete_modify');
+    const database = createSyncDatabase(`conflict-escape-${crypto.randomUUID()}`);
+    databases.push(database);
+    const runtime = new AppRuntime({
+      database,
+      api: { getCurrentSession: vi.fn(async () => session()) } as never,
+      engine: { status: new SyncStatusStore() } as never,
+      scheduler: { start: vi.fn(), stop: vi.fn(), manualSync: vi.fn() },
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    const user = userEvent.setup();
+    const view = render(<RuntimeProvider runtime={runtime}><ConflictCenter conflicts={[conflict]} /></RuntimeProvider>);
+    const trigger = screen.getByRole('button', { name: '查看并解决' });
+    await user.click(trigger);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    view.unmount();
+    release();
+    await runtime.closed();
+  });
 });

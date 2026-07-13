@@ -276,6 +276,17 @@ describe('synchronization engine', () => {
     expect(api.pushedBatches[0]?.[0]?.operationId).toBe(row.operationId);
   });
 
+  it('does not synchronize while authentication is explicitly paused', async () => {
+    engine.pauseForAuthentication();
+    await engine.start();
+    await engine.requestAutomaticSync();
+    await engine.manualSync();
+    expect(api.calls).toEqual([]);
+
+    await engine.resumeAfterAuthentication();
+    expect(api.calls[0]).toBe('session');
+  });
+
   it('never uploads the previous user queue after a different user logs in', async () => {
     await createLocalTask();
     api.sessions.push(session(USER_B));

@@ -38,20 +38,20 @@ export class SyncEngine {
   }
 
   start(): Promise<void> {
-    return this.requestSync(false);
+    return this.requestSync();
   }
 
   manualSync(): Promise<void> {
-    return this.requestSync(false);
+    return this.requestSync();
   }
 
   requestAutomaticSync(): Promise<void> {
-    return this.requestSync(true);
+    return this.requestSync();
   }
 
-  requestSync(automatic = false): Promise<void> {
+  requestSync(): Promise<void> {
     if (this.closed) return Promise.reject(new Error('Sync engine is closed'));
-    if (automatic && this.authenticationPaused) return Promise.resolve();
+    if (this.authenticationPaused) return Promise.resolve();
     if (this.running) {
       this.rerunRequested = true;
       return this.running;
@@ -62,7 +62,12 @@ export class SyncEngine {
 
   resumeAfterAuthentication(): Promise<void> {
     this.authenticationPaused = false;
-    return this.requestSync(false);
+    return this.requestSync();
+  }
+
+  pauseForAuthentication(): void {
+    this.authenticationPaused = true;
+    this.rerunRequested = false;
   }
 
   markOffline(): void {
