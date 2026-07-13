@@ -15,10 +15,19 @@ import { AppRuntime } from './app-runtime';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+function activeSessionRecovery(runtime: AppRuntime): Promise<void> {
+  const recovery = Reflect.get(runtime, 'sessionRecoveryPromise') as
+    Promise<void> | null;
+  if (!recovery) throw new Error('Expected an active session recovery');
+  return recovery;
 }
 
 function accountApi() {
@@ -38,13 +47,14 @@ describe('application runtime lifecycle', () => {
   function runtimeWith(
     database: SyncDatabase,
     getCurrentSession: () => Promise<ReturnType<typeof session>>,
+    loginSession = session(),
   ) {
     const status = new SyncStatusStore();
     const resumeAfterAuthentication = vi.fn(async () => undefined);
     const pauseForAuthentication = vi.fn();
     const api = {
       getCurrentSession: vi.fn(getCurrentSession),
-      login: vi.fn(async () => session()),
+      login: vi.fn(async () => loginSession),
       logout: vi.fn(async () => ({ ok: true as const })),
     };
     const scheduler = { start: vi.fn(), stop: vi.fn() };
@@ -323,6 +333,135 @@ describe('application runtime lifecycle', () => {
     expect((await database.metadata.get(USER_A))?.cursor).toBe(11);
     release();
     await setup.runtime.closed();
+  });
+
+  it.each([
+    ['old session', 'session'],
+    ['old 401', 'authRequired'],
+    ['old network failure', 'network'],
+  ] as const)('discards %s after a newer explicit login', async (_label, result) => {
+    const database = createSyncDatabase(`runtime-stale-recovery-${result}-${crypto.randomUUID()}`);
+    databases.push(database);
+    const oldSession = {
+      ...session(), deviceName: 'Old revoked device',
+      expiresAt: '2026-07-14T04:00:00.000Z',
+    };
+    const newSession = {
+      ...session(), deviceName: 'New login device',
+      expiresAt: '2026-07-18T04:00:00.000Z',
+    };
+    const recovery = deferred<ReturnType<typeof session>>();
+    let requestCount = 0;
+    const setup = runtimeWith(database, async () => {
+      requestCount += 1;
+      return requestCount === 1 ? oldSession : recovery.promise;
+    }, newSession);
+    const release = setup.runtime.acquire();
+    await setup.runtime.ready();
+    setup.status.update({ phase: 'synced' });
+    await vi.waitFor(() => {
+      expect(setup.api.getCurrentSession).toHaveBeenCalledTimes(2);
+    });
+    const recoveryWork = activeSessionRecovery(setup.runtime);
+
+    await setup.runtime.logout();
+    expect(setup.runtime.getSnapshot().authMode).toBe('authRequired');
+    await setup.runtime.login('learner', 'secure password');
+    expect(setup.runtime.getSnapshot()).toMatchObject({
+      authMode: 'authenticated', session: newSession,
+    });
+    expect(await database.metadata.get(USER_A)).toMatchObject({
+      authState: 'authenticated',
+      deviceName: newSession.deviceName,
+      sessionExpiresAt: newSession.expiresAt,
+    });
+
+    if (result === 'session') recovery.resolve(oldSession);
+    else if (result === 'authRequired') recovery.reject(new AuthRequiredError());
+    else recovery.reject(new NetworkError());
+    await recoveryWork;
+
+    expect(setup.runtime.getSnapshot()).toMatchObject({
+      authMode: 'authenticated', session: newSession,
+    });
+    expect(await database.metadata.get(USER_A)).toMatchObject({
+      authState: 'authenticated',
+      deviceName: newSession.deviceName,
+      sessionExpiresAt: newSession.expiresAt,
+    });
+    expect(setup.pauseForAuthentication).toHaveBeenCalledTimes(1);
+    release();
+    await setup.runtime.closed();
+  });
+
+  it('keeps authRequired when a newer login attempt fails before old recovery returns', async () => {
+    const database = createSyncDatabase(`runtime-stale-recovery-login-failure-${crypto.randomUUID()}`);
+    databases.push(database);
+    const oldSession = {
+      ...session(), deviceName: 'Old recovery after failed login',
+    };
+    const recovery = deferred<ReturnType<typeof session>>();
+    let requestCount = 0;
+    const setup = runtimeWith(database, async () => {
+      requestCount += 1;
+      return requestCount === 1 ? session() : recovery.promise;
+    });
+    const release = setup.runtime.acquire();
+    await setup.runtime.ready();
+    setup.status.update({ phase: 'synced' });
+    await vi.waitFor(() => {
+      expect(setup.api.getCurrentSession).toHaveBeenCalledTimes(2);
+    });
+    const recoveryWork = activeSessionRecovery(setup.runtime);
+    await setup.runtime.logout();
+    setup.api.login.mockRejectedValue(new NetworkError());
+
+    await expect(setup.runtime.login('learner', 'secure password'))
+      .rejects.toBeInstanceOf(NetworkError);
+    recovery.resolve(oldSession);
+    await recoveryWork;
+
+    expect(setup.runtime.getSnapshot()).toMatchObject({
+      authMode: 'authRequired', session: null,
+    });
+    expect(await database.metadata.get(USER_A)).toMatchObject({
+      authState: 'required',
+    });
+    release();
+    await setup.runtime.closed();
+  });
+
+  it('does not commit a session recovery after disposal', async () => {
+    const database = createSyncDatabase(`runtime-stale-recovery-dispose-${crypto.randomUUID()}`);
+    databases.push(database);
+    const current = session();
+    const recovery = deferred<ReturnType<typeof session>>();
+    let requestCount = 0;
+    const setup = runtimeWith(database, async () => {
+      requestCount += 1;
+      return requestCount === 1 ? current : recovery.promise;
+    });
+    const release = setup.runtime.acquire();
+    await setup.runtime.ready();
+    setup.status.update({ phase: 'synced' });
+    await vi.waitFor(() => {
+      expect(setup.api.getCurrentSession).toHaveBeenCalledTimes(2);
+    });
+    const recoveryWork = activeSessionRecovery(setup.runtime);
+    const snapshotBeforeDispose = setup.runtime.getSnapshot();
+    const metadataBeforeDispose = await database.metadata.get(USER_A);
+
+    release();
+    await setup.runtime.closed();
+    recovery.resolve({
+      ...current, deviceName: 'Disposed recovery device',
+      expiresAt: '2026-07-19T04:00:00.000Z',
+    });
+    await recoveryWork;
+    await database.open();
+
+    expect(setup.runtime.getSnapshot()).toBe(snapshotBeforeDispose);
+    expect(await database.metadata.get(USER_A)).toEqual(metadataBeforeDispose);
   });
 
   it('keeps logout authoritative after an old in-flight sync returns', async () => {

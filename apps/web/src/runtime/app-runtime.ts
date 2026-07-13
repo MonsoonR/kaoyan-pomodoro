@@ -70,6 +70,7 @@ export class AppRuntime {
   private leases = 0;
   private started = false;
   private disposed = false;
+  private authenticationGeneration = 0;
   private startPromise: Promise<void> | null = null;
   private disposePromise: Promise<void> | null = null;
   private sessionRecoveryPromise: Promise<void> | null = null;
@@ -135,18 +136,21 @@ export class AppRuntime {
   }
 
   async login(username: string, password: string): Promise<CurrentSession> {
+    const generation = this.invalidateAuthenticationWork();
     const session = await this.api.login(username, password);
-    await this.activateSession(session);
-    await this.engine.resumeAfterAuthentication?.();
+    const activated = await this.activateSession(session, generation);
+    if (activated) await this.engine.resumeAfterAuthentication?.();
     return session;
   }
 
   async logout(): Promise<void> {
+    this.invalidateAuthenticationWork();
     await this.api.logout();
     await this.authenticationRequired();
   }
 
   async authenticationRequired(): Promise<void> {
+    this.invalidateAuthenticationWork();
     this.engine.pauseForAuthentication?.();
     this.update({
       authMode: 'authRequired',
@@ -190,6 +194,7 @@ export class AppRuntime {
     this.unsubscribeStatus = this.engine.status.subscribe(() => {
       const phase = this.engine.status.getSnapshot().phase;
       if (phase === 'authRequired') {
+        this.invalidateAuthenticationWork();
         this.engine.pauseForAuthentication?.();
         this.update({
           authMode: this.snapshot.activeUserId ? 'authRequired' : 'login',
@@ -232,18 +237,16 @@ export class AppRuntime {
       !this.snapshot.activeUserId ||
       this.snapshot.authMode === 'authRequired'
     ) return;
+    const generation = this.authenticationGeneration;
     const activeUserId = this.snapshot.activeUserId;
     this.sessionRecoveryPromise = (async () => {
       try {
         const session = await this.api.getCurrentSession();
-        if (
-          this.disposed ||
-          this.snapshot.authMode === 'authRequired' ||
-          this.snapshot.activeUserId !== activeUserId
-        ) return;
-        await this.activateSession(session);
+        if (!this.isAuthenticationWorkCurrent(generation, activeUserId) ||
+            this.snapshot.authMode === 'authRequired') return;
+        await this.activateSession(session, generation);
       } catch (error) {
-        if (this.disposed) return;
+        if (!this.isAuthenticationWorkCurrent(generation, activeUserId)) return;
         if (error instanceof AuthRequiredError) {
           await this.authenticationRequired();
         } else if (this.snapshot.authMode !== 'authRequired') {
@@ -256,9 +259,15 @@ export class AppRuntime {
     })().finally(() => { this.sessionRecoveryPromise = null; });
   }
 
-  private async activateSession(session: CurrentSession): Promise<void> {
+  private async activateSession(
+    session: CurrentSession,
+    generation = this.authenticationGeneration,
+  ): Promise<boolean> {
+    if (!this.isAuthenticationWorkCurrent(generation)) return false;
     await this.database.setActiveUser(session.user.id);
+    if (!this.isAuthenticationWorkCurrent(generation)) return false;
     const metadata = await this.database.getOrCreateMetadata(session.user.id);
+    if (!this.isAuthenticationWorkCurrent(generation)) return false;
     await this.database.metadata.put({
       ...metadata,
       activeUserId: session.user.id,
@@ -268,6 +277,8 @@ export class AppRuntime {
       deviceName: session.deviceName,
       sessionExpiresAt: session.expiresAt,
     });
+    if (!this.isAuthenticationWorkCurrent(generation)) return false;
+    this.invalidateAuthenticationWork();
     this.queueFor(session.user.id);
     this.update({
       authMode: 'authenticated',
@@ -276,6 +287,7 @@ export class AppRuntime {
       username: session.user.username,
       firstLoginOffline: false,
     });
+    return true;
   }
 
   private update(patch: Partial<RuntimeSnapshot>): void {
@@ -286,6 +298,7 @@ export class AppRuntime {
 
   private async dispose(): Promise<void> {
     if (this.disposed) return;
+    this.invalidateAuthenticationWork();
     this.disposed = true;
     this.scheduler.stop();
     this.unsubscribeStatus?.();
@@ -295,6 +308,21 @@ export class AppRuntime {
     await this.startPromise?.catch(() => undefined);
     if (this.engine.close) await this.engine.close();
     else this.database.close();
+  }
+
+  private invalidateAuthenticationWork(): number {
+    this.authenticationGeneration += 1;
+    return this.authenticationGeneration;
+  }
+
+  private isAuthenticationWorkCurrent(
+    generation: number,
+    activeUserId?: string,
+  ): boolean {
+    return !this.disposed &&
+      generation === this.authenticationGeneration &&
+      (activeUserId === undefined ||
+        activeUserId === this.snapshot.activeUserId);
   }
 }
 
