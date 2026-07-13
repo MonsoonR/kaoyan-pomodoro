@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "lint": "eslint .",
-    "build": "tsc --project tsconfig.build.json",
+    "build": "tsc --project tsconfig.build.json && tsc-alias --project tsconfig.build.json --resolve-full-paths --resolve-full-extension .js",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "account:init": "tsx src/cli/account.ts init",
@@ -28,6 +28,7 @@
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "^22.10.2",
     "drizzle-kit": "0.31.10",
+    "tsc-alias": "1.8.16",
     "tsx": "^4.20.6",
     "typescript": "^5.7.2",
     "vitest": "^3.2.4"

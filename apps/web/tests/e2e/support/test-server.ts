@@ -18,7 +18,7 @@ await initializeAccount(database.sqlite, {
 
 const app = await createApp({
   database,
-  appOrigin: 'http://localhost:4173',
+  appOrigin: process.env.KAOYAN_APP_ORIGIN ?? 'http://localhost:4173',
   passwordOptions: TEST_PASSWORD_OPTIONS,
   logger: false,
 });

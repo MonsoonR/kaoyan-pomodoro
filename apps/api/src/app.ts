@@ -25,6 +25,7 @@ import { studyDataRoutes } from './routes/study-data';
 import { syncRoutes } from './routes/sync';
 import { timerRoutes } from './routes/timer';
 import { conflictRoutes } from './routes/conflicts';
+import { healthRoutes } from './routes/health';
 import {
   ConflictAlreadyResolvedError,
   ConflictResolutionTargetExistsError,
@@ -85,6 +86,7 @@ export async function createApp(options: AppOptions) {
   });
 
   installOriginGuard(app, options.appOrigin);
+  await healthRoutes(app, connection.sqlite);
   const services = {
     sqlite: connection.sqlite,
     now: options.now ?? (() => new Date()),

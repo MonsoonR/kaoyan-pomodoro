@@ -1,3 +1,65 @@
-import { createInterface } from 'node:readline/promises'; import { stdin,stdout } from 'node:process'; import { pathToFileURL } from 'node:url'; import { initializeAccount,resetAccountPassword } from '../auth/account-service'; import { openDatabase } from '../db/client'; import { migrateDatabase } from '../db/migrate'; import { resolveDatabaseSource } from '../db/database-source'; import { promptHidden } from './prompt-password';
-async function main(){const command=process.argv[2];if(process.argv.length>3)throw new Error('Passwords and account data must not be passed as command arguments');const path=process.env.DATABASE_PATH;if(!path)throw new Error('DATABASE_PATH is required');const c=openDatabase(resolveDatabaseSource(path));try{migrateDatabase(c.db);const password=await promptHidden('New password: ');const confirm=await promptHidden('Confirm password: ');if(command==='init'){const rl=createInterface({input:stdin,output:stdout});try{const username=await rl.question('Username: ');await initializeAccount(c.sqlite,{username,password,confirmPassword:confirm});}finally{rl.close();}}else if(command==='reset-password')await resetAccountPassword(c.sqlite,password,confirm);else throw new Error('Use init or reset-password');stdout.write('Account updated successfully.\n');}finally{c.close();}}
-const entry=process.argv[1];if(entry&&import.meta.url===pathToFileURL(entry).href)await main();
+import { readFileSync } from 'node:fs';
+import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
+import { pathToFileURL } from 'node:url';
+
+import { initializeAccount, resetAccountPassword } from '../auth/account-service';
+import { openDatabase } from '../db/client';
+import { resolveDatabaseSource } from '../db/database-source';
+import { migrateDatabase } from '../db/migrate';
+import { promptHidden } from './prompt-password';
+
+type Input = { username: string | undefined; password: string; confirmPassword: string };
+
+async function readInput(command: string): Promise<Input> {
+  if (process.env.KAOYAN_ACCOUNT_STDIN === '1') {
+    const parsed = JSON.parse(readFileSync(0, 'utf8')) as Partial<Input>;
+    if (typeof parsed.password !== 'string' || typeof parsed.confirmPassword !== 'string' ||
+        (command === 'init' && typeof parsed.username !== 'string'))
+      throw new Error('Invalid account input from stdin');
+    return { username: parsed.username, password: parsed.password, confirmPassword: parsed.confirmPassword } as Input;
+  }
+  let username: string | undefined;
+  if (command === 'init') {
+    const readline = createInterface({ input: stdin, output: stdout });
+    try { username = await readline.question('Username: '); }
+    finally { readline.close(); }
+  }
+  const password = await promptHidden('New password: ');
+  const confirmPassword = await promptHidden('Confirm password: ');
+  return { username, password, confirmPassword };
+}
+
+async function main() {
+  const command = process.argv[2];
+  if (process.argv.length > 3)
+    throw new Error('Passwords and account data must not be passed as command arguments');
+  if (command !== 'init' && command !== 'reset-password')
+    throw new Error('Use init or reset-password');
+  const path = process.env.DATABASE_PATH;
+  if (!path) throw new Error('DATABASE_PATH is required');
+  const input = await readInput(command);
+  const connection = openDatabase(resolveDatabaseSource(path));
+  try {
+    migrateDatabase(connection.db);
+    if (command === 'init') {
+      await initializeAccount(connection.sqlite, {
+        username: input.username ?? '',
+        password: input.password,
+        confirmPassword: input.confirmPassword,
+      });
+    } else {
+      await resetAccountPassword(
+        connection.sqlite,
+        input.password,
+        input.confirmPassword,
+      );
+    }
+    stdout.write('Account updated successfully.\n');
+  } finally {
+    connection.close();
+  }
+}
+
+const entry = process.argv[1];
+if (entry && import.meta.url === pathToFileURL(entry).href) await main();

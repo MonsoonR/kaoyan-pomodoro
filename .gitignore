@@ -5,3 +5,11 @@ playwright-report/
 /.worktrees/
 /.pnpm-store/
 .DS_Store
+.env
+data/
+backups/
+caddy-data/
+caddy-config/
+*.sqlite
+*.sqlite-*
+*.sqlite.gz

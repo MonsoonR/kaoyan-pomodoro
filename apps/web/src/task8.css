@@ -107,3 +107,9 @@
   .timer-reconciliation__actions { display: grid; }
   .timer-reconciliation__actions .button { width: 100%; }
 }
+
+.pwa-notice { position: fixed; z-index: 1000; left: 50%; bottom: 1.25rem; transform: translateX(-50%); display: flex; align-items: center; gap: .75rem; max-width: calc(100vw - 2rem); padding: .8rem 1rem; border: 1px solid #b8d5c9; border-radius: .8rem; background: #fffdf7; color: #163f31; box-shadow: 0 10px 35px #173d2b33; }
+.pwa-notice button, .pwa-update-reopen { border: 0; border-radius: .5rem; padding: .45rem .7rem; background: #1f6b4f; color: white; cursor: pointer; white-space: nowrap; }
+.pwa-notice button:last-child { background: transparent; color: #315a4a; }
+.pwa-notice--error { border-color: #d9a4a4; color: #7d2020; }
+.pwa-update-reopen { position: fixed; z-index: 1000; right: 1rem; bottom: 1rem; }

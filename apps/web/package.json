@@ -6,13 +6,14 @@
   "scripts": {
     "lint": "eslint .",
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "test:model": "node --test tests/model.test.js",
     "test:sync": "vitest run",
     "test": "pnpm --filter @kaoyan/contracts build && pnpm test:model && pnpm test:sync",
-    "test:e2e": "pnpm --filter @kaoyan/contracts build && playwright test"
+    "test:e2e": "pnpm --filter @kaoyan/contracts build && playwright test",
+    "test:pwa": "pnpm --filter @kaoyan/contracts build && playwright test --config playwright.pwa.config.js"
   },
   "dependencies": {
     "@kaoyan/contracts": "workspace:*",
@@ -31,8 +32,11 @@
     "@vitejs/plugin-react": "^4.3.4",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
+    "selfsigned": "2.4.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
-    "vitest": "^3.2.7"
+    "vite-plugin-pwa": "1.0.3",
+    "vitest": "^3.2.7",
+    "workbox-window": "7.3.0"
   }
 }

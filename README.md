@@ -71,3 +71,7 @@ npx playwright install chromium
    `https://你的用户名.github.io/仓库名/`
 
 以后每次推送到 `main`，GitHub Pages 都会自动重新部署。项目数据保存在访问者自己的浏览器中，不会上传到仓库。
+
+## 自托管同步版
+
+生产自托管、HTTPS、PWA、备份与恢复说明见 [部署文档](docs/deployment.md)。
