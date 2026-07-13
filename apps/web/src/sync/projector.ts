@@ -196,33 +196,56 @@ export function projectTimer(
     const operation = operationOf(item);
     if (operation.entityType !== 'activeTimer') continue;
     if (operation.operationType === 'timerStart') {
+      const startedAt = operation.createdAt;
       current = {
         id: operation.entityId,
         dailyTaskId: operation.payload.dailyTaskId,
         phase: operation.payload.phase,
         plannedSeconds: operation.payload.plannedSeconds,
+        startedAt,
+        targetEndAt: new Date(
+          Date.parse(startedAt) + operation.payload.plannedSeconds * 1_000,
+        ).toISOString(),
+        pausedAt: null,
         status: 'starting',
         version: 0,
         reason: null,
       };
-    } else if (
-      operation.operationType === 'timerComplete' ||
-      operation.operationType === 'timerExit'
-    ) {
-      current = null;
     } else {
       if (!current) throw new Error('Timer mutation has no projection base');
-      const reason =
-        operation.operationType === 'timerPause'
-          ? operation.payload.reason
-          : null;
-      const status: LocalTimerProjection['status'] =
-        operation.operationType === 'timerPause' ? 'pausing' : 'resuming';
+      let targetEndAt: string = current.targetEndAt;
+      let pausedAt: string | null = current.pausedAt;
+      let reason: string | null = 'reason' in current ? current.reason :
+        current.interruptionReason;
+      let status: LocalTimerProjection['status'];
+      if (operation.operationType === 'timerPause') {
+        status = 'pausing';
+        pausedAt = operation.createdAt;
+        reason = operation.payload.reason;
+      } else if (operation.operationType === 'timerResume') {
+        status = 'resuming';
+        if (pausedAt) {
+          targetEndAt = new Date(
+            Date.parse(targetEndAt) +
+              Math.max(0, Date.parse(operation.createdAt) - Date.parse(pausedAt)),
+          ).toISOString();
+        }
+        pausedAt = null;
+        reason = null;
+      } else if (operation.operationType === 'timerComplete') {
+        status = 'completing';
+      } else {
+        status = 'exiting';
+        reason = operation.payload.reason;
+      }
       current = {
         id: current.id,
         dailyTaskId: current.dailyTaskId,
         phase: current.phase,
         plannedSeconds: current.plannedSeconds,
+        startedAt: current.startedAt,
+        targetEndAt,
+        pausedAt,
         status,
         version: current.version + 1,
         reason,

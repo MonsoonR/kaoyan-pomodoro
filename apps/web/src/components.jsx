@@ -97,7 +97,7 @@ export function TaskForm({ kind, initial, defaultPreset, onCancel, onSave }) {
 
 // Default callback parameters document the callable prop shape for checked JSX.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function TaskRow({ task, compact = false, onStart, onToggle, onEdit = (_task) => {}, onDelete = (_task) => {}, onMove = (_task, _direction) => {} }) {
+export function TaskRow({ task, compact = false, startLabel = '开始专注', onStart, onToggle, onEdit = (_task) => {}, onDelete = (_task) => {}, onMove = (_task, _direction) => {} }) {
   const completed = task.status === 'completed';
   const awaiting = task.status === 'awaiting_confirmation';
   return (
@@ -109,7 +109,7 @@ export function TaskRow({ task, compact = false, onStart, onToggle, onEdit = (_t
         <Progress value={task.pomodoroCompleted} max={task.pomodoroTarget} label={`${task.title} 番茄进度`} />
       </div>
       <div className="task-row__actions">
-        {!completed ? <button className="button button--outline button--small" type="button" aria-label={`开始专注：${task.title}`} onClick={() => onStart(task)}><Play size={15} />开始专注</button> : null}
+        {!completed ? <button className="button button--outline button--small" type="button" aria-label={`${startLabel}：${task.title}`} onClick={() => onStart(task)}><Play size={15} />{startLabel}</button> : null}
         {!compact ? <>
           <button className="icon-button" type="button" aria-label={`编辑：${task.title}`} onClick={() => onEdit(task)}><Edit3 size={16} /></button>
           {onMove ? <><button className="icon-button" type="button" aria-label={`上移：${task.title}`} onClick={() => onMove(task, -1)}><ArrowUp size={16} /></button><button className="icon-button" type="button" aria-label={`下移：${task.title}`} onClick={() => onMove(task, 1)}><ArrowDown size={16} /></button></> : null}

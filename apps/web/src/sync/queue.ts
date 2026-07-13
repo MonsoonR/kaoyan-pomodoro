@@ -28,6 +28,8 @@ export interface QueueDependencies {
 
 export class OfflineOperationQueue {
   private readonly listeners = new Set<EnqueueListener>();
+  private readonly completionEnqueues = new Map<string, Promise<OperationRow>>();
+  private startEnqueue: Promise<OperationRow> | null = null;
   private readonly now: () => Date;
   private readonly randomUUID: () => string;
 
@@ -56,11 +58,18 @@ export class OfflineOperationQueue {
   ): Promise<number> {
     return this.database.transaction(
       'r',
-      [this.database.replicas, this.database.operations],
+      [
+        this.database.replicas,
+        this.database.operations,
+        this.database.timerCache,
+      ],
       async () => {
         const replica = await this.database.replicas.get(
           replicaKey(this.userId, entityType, entityId),
         );
+        const timerCache = entityType === 'activeTimer'
+          ? await this.database.timerCache.get(this.userId)
+          : null;
         const operations = await this.database.operations
           .where('[userId+entityType+entityId]')
           .equals([this.userId, entityType, entityId])
@@ -71,8 +80,12 @@ export class OfflineOperationQueue {
           )
           .sortBy('sequence');
         return predictServerVersion(
-          replica?.serverVersion ?? 0,
-          replica?.serverValue ?? null,
+          timerCache?.serverTimer?.id === entityId
+            ? timerCache.serverTimer.version
+            : replica?.serverVersion ?? 0,
+          timerCache?.serverTimer?.id === entityId
+            ? timerCache.serverTimer
+            : replica?.serverValue ?? null,
           operations,
         );
       },
@@ -124,6 +137,9 @@ export class OfflineOperationQueue {
           operation.entityId,
         );
         const existing = await this.database.replicas.get(key);
+        const timerCache = operation.entityType === 'activeTimer'
+          ? await this.database.timerCache.get(this.userId)
+          : null;
         const active = await this.database.operations
           .where('[userId+entityType+entityId]')
           .equals([this.userId, operation.entityType, operation.entityId])
@@ -137,7 +153,9 @@ export class OfflineOperationQueue {
         const projectedValue =
           operation.entityType === 'activeTimer'
             ? projectTimer(
-                isActiveTimer(serverValue) ? serverValue : null,
+                isActiveTimer(serverValue)
+                  ? serverValue
+                  : timerCache?.serverTimer ?? null,
                 active,
               )
             : projectEntity(existing?.serverValue ?? null, active);
@@ -158,17 +176,16 @@ export class OfflineOperationQueue {
           await this.database.countPendingOperations(this.userId);
         await this.database.metadata.put({ ...metadata, pendingCount });
         if (operation.entityType === 'activeTimer') {
-          const cache = await this.database.timerCache.get(this.userId);
           await this.database.timerCache.put({
             userId: this.userId,
-            serverTimer: cache?.serverTimer ?? null,
+            serverTimer: timerCache?.serverTimer ?? null,
             projectedTimer: isTimerProjection(projectedValue)
               ? projectedValue
               : null,
-            serverTime: cache?.serverTime ?? null,
-            receivedAt: cache?.receivedAt ?? null,
-            clockOffsetMs: cache?.clockOffsetMs ?? null,
-            clockUncertaintyMs: cache?.clockUncertaintyMs ?? null,
+            serverTime: timerCache?.serverTime ?? null,
+            receivedAt: timerCache?.receivedAt ?? null,
+            clockOffsetMs: timerCache?.clockOffsetMs ?? null,
+            clockUncertaintyMs: timerCache?.clockUncertaintyMs ?? null,
             pendingOperationIds: active.map(
               (candidate) => candidate.operationId,
             ),
@@ -337,6 +354,43 @@ export class OfflineOperationQueue {
     });
   }
 
+  async startTimerForDailyTask(
+    timerId: string,
+    dailyTaskId: string,
+    phase: 'focus' | 'short_break' | 'long_break',
+    plannedSeconds: number,
+  ): Promise<OperationRow> {
+    if (this.startEnqueue) return this.startEnqueue;
+    const promise = (async () => {
+      const cache = await this.database.timerCache.get(this.userId);
+      if (cache?.projectedTimer || cache?.serverTimer)
+        throw new Error('A local timer is already active');
+      const activeTimerOperation = await this.database.operations
+        .where('userId')
+        .equals(this.userId)
+        .filter((row) => row.entityType === 'activeTimer' &&
+          (row.state === 'pending' || row.state === 'acknowledged'))
+        .first();
+      if (activeTimerOperation)
+        throw new Error('A local timer operation is already active');
+      const dailyTaskVersion = await this.baseVersion('dailyTask', dailyTaskId);
+      if (dailyTaskVersion < 1)
+        throw new Error('Daily task is not available in the local replica');
+      return this.startTimer(timerId, {
+        dailyTaskId,
+        dailyTaskVersion,
+        phase,
+        plannedSeconds,
+      });
+    })();
+    this.startEnqueue = promise;
+    const clear = () => {
+      if (this.startEnqueue === promise) this.startEnqueue = null;
+    };
+    void promise.then(clear, clear);
+    return promise;
+  }
+
   async pauseTimer(entityId: string, reason: string): Promise<OperationRow> {
     return this.timerStateOperation(entityId, 'timerPause', { reason });
   }
@@ -349,8 +403,92 @@ export class OfflineOperationQueue {
     return this.timerStateOperation(entityId, 'timerComplete', {});
   }
 
+  completeTimerOnce(entityId: string): Promise<OperationRow> {
+    const inFlight = this.completionEnqueues.get(entityId);
+    if (inFlight) return inFlight;
+    const promise = (async () => {
+      const existing = await this.database.operations
+        .where('[userId+entityType+entityId]')
+        .equals([this.userId, 'activeTimer', entityId])
+        .filter((row) =>
+          (row.state === 'pending' || row.state === 'acknowledged') &&
+          row.operation.operationType === 'timerComplete')
+        .first();
+      return existing ?? this.completeTimer(entityId);
+    })();
+    this.completionEnqueues.set(entityId, promise);
+    const clear = () => {
+      if (this.completionEnqueues.get(entityId) === promise)
+        this.completionEnqueues.delete(entityId);
+    };
+    void promise.then(clear, clear);
+    return promise;
+  }
+
   async exitTimer(entityId: string, reason: string): Promise<OperationRow> {
     return this.timerStateOperation(entityId, 'timerExit', { reason });
+  }
+
+  async acknowledgeTimerIssue(operationId: string): Promise<void> {
+    await this.database.transaction(
+      'rw',
+      [this.database.operations, this.database.syncIssues],
+      async () => {
+        const row = await this.database.operations
+          .where('operationId')
+          .equals(operationId)
+          .first();
+        if (!row || row.userId !== this.userId || row.state !== 'rejected' ||
+            row.entityType !== 'activeTimer' || row.sequence === undefined)
+          throw new Error('Rejected timer operation is not available');
+        await this.database.operations.delete(row.sequence);
+        await this.database.syncIssues
+          .where('operationId')
+          .equals(operationId)
+          .delete();
+      },
+    );
+  }
+
+  async retryTimerOperation(operationId: string): Promise<OperationRow> {
+    const original = await this.database.operations
+      .where('operationId')
+      .equals(operationId)
+      .first();
+    if (!original || original.userId !== this.userId ||
+        original.state !== 'rejected' || original.entityType !== 'activeTimer')
+      throw new Error('Rejected timer operation is not available');
+    const operation = original.operation;
+    if (operation.entityType !== 'activeTimer')
+      throw new Error('Rejected operation is not a timer operation');
+    const timer = (await this.database.timerCache.get(this.userId))?.serverTimer ?? null;
+    if (operation.operationType === 'timerStart') {
+      if (timer) throw new Error('A server timer is already active');
+      return this.startTimerForDailyTask(
+        operation.entityId,
+        operation.payload.dailyTaskId,
+        operation.payload.phase,
+        operation.payload.plannedSeconds,
+      );
+    }
+    if (!timer || timer.id !== operation.entityId)
+      throw new Error('The timer has already ended on another device');
+    if (operation.operationType === 'timerPause') {
+      if (timer.status !== 'running')
+        throw new Error('The server timer cannot be paused now');
+      return this.pauseTimer(operation.entityId, operation.payload.reason);
+    }
+    if (operation.operationType === 'timerResume') {
+      if (timer.status !== 'paused')
+        throw new Error('The server timer cannot be resumed now');
+      return this.resumeTimer(operation.entityId);
+    }
+    if (operation.operationType === 'timerComplete') {
+      if (timer.status !== 'running')
+        throw new Error('The server timer cannot be completed now');
+      return this.completeTimer(operation.entityId);
+    }
+    return this.exitTimer(operation.entityId, operation.payload.reason);
   }
 
   private async timerStateOperation(

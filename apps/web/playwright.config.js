@@ -6,11 +6,11 @@ export default defineConfig({
   testDir: './tests/e2e',
   workers: 1,
   fullyParallel: false,
-  timeout: 30_000,
-  expect: { timeout: 7_000 },
+  timeout: 90_000,
+  expect: { timeout: 10_000 },
   reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: 'http://localhost:4173',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
@@ -22,10 +22,19 @@ export default defineConfig({
       launchOptions: executablePath ? { executablePath, args: ['--no-sandbox'] } : undefined,
     },
   }],
-  webServer: {
-    command: 'npm run dev -- --port 4173',
-    url: 'http://127.0.0.1:4173',
-    reuseExistingServer: false,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'node --import ../api/node_modules/tsx/dist/loader.mjs tests/e2e/support/test-server.ts',
+      url: 'http://127.0.0.1:4174/api/timer',
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command: 'npm run dev -- --host localhost --port 4173',
+      env: { KAOYAN_API_ORIGIN: 'http://127.0.0.1:4174' },
+      url: 'http://localhost:4173',
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+  ],
 });

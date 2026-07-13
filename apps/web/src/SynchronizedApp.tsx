@@ -22,10 +22,13 @@ import { AuthExperience } from './features/auth/AuthExperience';
 import { ConflictCenter } from './features/conflicts/ConflictCenter';
 import { useReplicaData } from './features/replicas/use-replica-data';
 import { SyncStatusPanel } from './features/sync/SyncStatusPanel';
+import { TimerPage } from './features/timer/TimerPage';
+import { useTimerState } from './features/timer/use-timer-state';
 import {
   DEFAULT_SETTINGS,
   PRESETS,
   formatDuration,
+  getDurations,
   getDateKey,
   getIsoDateKey,
   getSummary,
@@ -68,6 +71,24 @@ function Empty({ title, text, action }: {
   action?: React.ReactNode;
 }) {
   return <div className="empty"><span><Sprout /></span><h3>{title}</h3><p>{text}</p>{action}</div>;
+}
+
+function TimerEntry({ timerState, onOpen }: {
+  timerState: ReturnType<typeof useTimerState>;
+  onOpen: () => void;
+}) {
+  const timer = timerState.viewModel.timer;
+  if (!timer) return null;
+  const stateLabel = timer.status === 'paused' || timer.status === 'pausing'
+    ? '已暂停'
+    : timerState.viewModel.pending
+      ? '等待同步'
+      : '进行中';
+  return <section className="timer-entry" aria-label="当前活动计时器">
+    <div><Clock3 size={20} /><span><strong>当前计时器</strong><small aria-live="polite">{stateLabel}</small></span></div>
+    <span className="timer-entry__clock" aria-label={`剩余时间 ${timerState.clockText}`}>{timerState.clockText}</span>
+    <button className="button button--primary button--small" type="button" onClick={onOpen}>返回当前计时器</button>
+  </section>;
 }
 
 function Shell({ route, go, sync, children }: {
@@ -145,6 +166,7 @@ function AppContent() {
   const runtime = useRuntime();
   const { activeUserId, authMode } = useRuntimeSnapshot();
   const data = useReplicaData(runtime.database, activeUserId);
+  const timerState = useTimerState(runtime.database, activeUserId);
   const queue = activeUserId ? runtime.queueFor(activeUserId) : null;
   const [route, setRoute] = useState<Route>(currentRoute);
   const [editor, setEditor] = useState<TaskEditor>(null);
@@ -168,6 +190,7 @@ function AppContent() {
   const today = getDateKey();
   const todayTasks = useMemo(() => data.dailyTasks.filter((task) => task.date === today).sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id)), [data.dailyTasks, today]);
   const summary = useMemo(() => getSummary(data.dailyTasks, data.focusSessions, today), [data.dailyTasks, data.focusSessions, today]);
+  const visibleTimer = timerState.viewModel.timer;
   const run = async (work: () => Promise<unknown>, success: string) => {
     try { await work(); toast(success); } catch (error) { toast(error instanceof Error ? error.message : '操作失败', true); }
   };
@@ -209,6 +232,36 @@ function AppContent() {
       await queue.updateDailyTask(other.id, { sortOrder: task.sortOrder });
     }, '顺序已更新');
   };
+  const openOrStartFocus = (task: DailyTask) => {
+    if (!queue) return;
+    if (visibleTimer) {
+      go(`focus/${visibleTimer.dailyTaskId}`);
+      toast('已切换到当前正在进行的计时器');
+      return;
+    }
+    const durations = getDurations(
+      { ...DEFAULT_SETTINGS, ...(settings ?? {}) },
+      task.timerPreset,
+    );
+    void run(async () => {
+      await queue.startTimerForDailyTask(
+        crypto.randomUUID(), task.id, 'focus', durations.focus,
+      );
+      go(`focus/${task.id}`);
+    }, '专注计时器已加入同步队列');
+  };
+
+  useEffect(() => {
+    if (!route.startsWith('focus/') || !visibleTimer) return;
+    const routedTaskId = route.slice('focus/'.length);
+    if (routedTaskId === visibleTimer.dailyTaskId) return;
+    go(`focus/${visibleTimer.dailyTaskId}`);
+    toast(
+      timerState.viewModel.reconciliation?.errorCode === 'TIMER_ALREADY_ACTIVE'
+        ? '已切换到其他设备上的当前计时器'
+        : '已切换到当前正在进行的计时器',
+    );
+  }, [go, route, timerState.viewModel.reconciliation?.errorCode, toast, visibleTimer]);
 
   if (!data.loaded) return <main className="login-page"><p role="status">正在读取本地同步副本…</p></main>;
   const sync = <SyncStatusPanel pendingCount={data.pendingCount} rejectedCount={data.rejectedCount} conflictCount={data.openConflictCount} syncIssues={data.syncIssues} />;
@@ -219,7 +272,8 @@ function AppContent() {
   if (route === 'today') page = <section className="page">
     <PageHeader title="今日任务" description="只安排今天能完成的内容，操作会先写入本地队列。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加今日任务</button>} />
     <section className="panel"><div className="section-title"><div><h2>今天的计划</h2><p>{todayTasks.length} 项任务 · 已完成 {summary.completed} 项</p></div></div>
-      {todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} onStart={() => go(`focus/${task.id}`)} onToggle={toggleDaily} onEdit={(item: DailyTask) => setEditor({ kind: 'daily', item })} onDelete={deleteDaily} onMove={moveDaily} />)}</div> : <Empty title="今天还没有任务" text="临时添加一个，或从长期任务库选择。" />}
+      {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
+      {todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} onEdit={(item: DailyTask) => setEditor({ kind: 'daily', item })} onDelete={deleteDaily} onMove={moveDaily} />)}</div> : <Empty title="今天还没有任务" text="临时添加一个，或从长期任务库选择。" />}
     </section>
     <section className="panel library-picker"><div className="section-title"><div><h2>从任务库添加</h2><p>加入今日时，来源版本由离线队列预测。</p></div><button className="text-link text-link--green" type="button" onClick={() => go('library')}>管理任务库<ArrowRight size={15} /></button></div>
       <div className="template-list">{activeTasks.map((task) => <article className="template-row" key={task.id}><div><SubjectBadge subject={task.subject} /><strong>{task.title}</strong><span>{task.defaultPomodoroTarget} 个番茄 · {PRESETS[task.defaultTimerPreset]}</span></div><button className="button button--outline button--small" type="button" onClick={() => addToday(task)}><Plus size={15} />加入今天</button></article>)}</div>
@@ -244,12 +298,44 @@ function AppContent() {
     </section>;
   } else if (route === 'settings') page = <SettingsPage settings={settings} settingsId={settings?.id ?? null} conflicts={data.conflicts} toast={toast} onSave={(id, patch) => queue ? run(() => queue.updateSettings(id, patch), '设置已保存') : Promise.reject(new Error('同步队列未准备好'))} />;
   else if (route.startsWith('focus/')) {
-    const task = data.dailyTasks.find((value) => value.id === route.split('/')[1]);
-    page = <section className="focus-page"><div className="focus-card"><SubjectBadge subject={task?.subject ?? 'other'} /><h1>{task?.title ?? '未找到任务'}</h1><div className="focus-ready"><Clock3 /><h2>计时器暂处于兼容边界</h2><p>Task 8 只接入账号与非计时器同步数据。全局计时器控制、跨设备倒计时和离线计时冲突将在 Task 9 完成。</p></div><button className="button button--primary" type="button" onClick={() => go('today')}>返回今日任务</button></div></section>;
+    const routeTask = data.dailyTasks.find((value) => value.id === route.split('/')[1]) ?? null;
+    const timerTask = visibleTimer
+      ? data.dailyTasks.find((value) => value.id === visibleTimer.dailyTaskId) ?? null
+      : null;
+    const task = timerTask ?? routeTask;
+    page = queue ? <TimerPage
+      timerState={timerState}
+      task={task}
+      queue={queue}
+      onBack={() => go('today')}
+      onTimerSwitch={(dailyTaskId) => go(`focus/${dailyTaskId}`)}
+      onManualSync={() => runtime.manualSync()}
+      onMessage={toast}
+      onStartPhase={(phase) => {
+        if (!task) return Promise.reject(new Error('今日任务不可用'));
+        const durations = getDurations(
+          { ...DEFAULT_SETTINGS, ...(settings ?? {}) },
+          task.timerPreset,
+        );
+        return run(
+          () => queue.startTimerForDailyTask(
+            crypto.randomUUID(),
+            task.id,
+            phase,
+            phase === 'short_break' ? durations.shortBreak : durations.longBreak,
+          ),
+          phase === 'short_break' ? '短休息已开始' : '长休息已开始',
+        );
+      }}
+      onConfirmTask={() => task
+        ? run(() => queue.completeDailyTask(task.id), '今日任务已确认完成')
+        : Promise.reject(new Error('今日任务不可用'))}
+    /> : <main className="focus-page"><p role="status">计时器队列正在准备…</p></main>;
   } else page = <section className="dashboard">
     <header className="hero"><div><div className="date-line"><CalendarDays size={16} />{new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())}</div><h1>今天也稳稳推进。</h1><p>{authMode === 'offline' ? '当前离线，本机操作会保留并在联网后同步。' : '先完成眼前这一项，不需要一次想完所有事情。'}</p></div><div className="hero__actions"><button className="button button--ghost" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加任务</button><button className="button button--primary" type="button" onClick={() => go('today')}><ListTodo size={17} />安排今日任务</button></div></header>
     <div className="summary-grid"><article className="summary-card"><div className="summary-card__title"><span>今日任务进度</span><i><Sprout /></i></div><div className="summary-number"><strong>{summary.completed} / {summary.total}</strong><span>项已完成</span></div><Progress value={summary.completed} max={summary.total} label="今日任务完成进度" /></article><article className="summary-card"><div className="summary-card__title"><span>今日专注时长</span><i><Clock3 /></i></div><div className="summary-number"><strong>{formatDuration(summary.focusSeconds)}</strong></div><p className="summary-note"><Focus size={16} />完成番茄 {summary.pomodoros} 个</p></article></div>
-    <section className="panel"><div className="section-title"><div><h2>今日任务</h2><p>按计划逐项完成</p></div><button className="text-link text-link--green" type="button" onClick={() => go('today')}>管理任务<ArrowRight size={15} /></button></div>{todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} compact onStart={() => go(`focus/${task.id}`)} onToggle={toggleDaily} />)}</div> : <Empty title="先安排今天的第一项任务" text="从任务库挑选一个目标，或者临时添加。" action={<button className="button button--primary" type="button" onClick={() => go('today')}>安排今日任务</button>} />}</section>
+    {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
+    <section className="panel"><div className="section-title"><div><h2>今日任务</h2><p>按计划逐项完成</p></div><button className="text-link text-link--green" type="button" onClick={() => go('today')}>管理任务<ArrowRight size={15} /></button></div>{todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} compact startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} />)}</div> : <Empty title="先安排今天的第一项任务" text="从任务库挑选一个目标，或者临时添加。" action={<button className="button button--primary" type="button" onClick={() => go('today')}>安排今日任务</button>} />}</section>
   </section>;
 
   return <>

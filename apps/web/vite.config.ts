@@ -12,4 +12,16 @@ export default defineConfig({
   base,
   build: { target: 'esnext' },
   plugins: [react()],
+  ...(process.env.KAOYAN_API_ORIGIN
+    ? {
+        server: {
+          proxy: {
+            '/api': {
+              target: process.env.KAOYAN_API_ORIGIN,
+              changeOrigin: true,
+            },
+          },
+        },
+      }
+    : {}),
 });

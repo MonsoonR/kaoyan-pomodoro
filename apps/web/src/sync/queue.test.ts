@@ -3,10 +3,12 @@ import { createSyncDatabase, type SyncDatabase } from '../db/database';
 import { replicaKey } from '../db/types';
 import {
   DAILY_ID,
+  NOW,
   SETTINGS_ID,
   settings,
   TASK_ID,
   TIMER_ID,
+  activeTimer,
   task,
   USER_A,
 } from '../test/fixtures';
@@ -285,5 +287,160 @@ describe('offline operation queue', () => {
       operationType: 'addToToday',
       payload: { sourceTaskId: TASK_ID, sourceTaskVersion: 2 },
     });
+  });
+
+  it('predicts dailyTaskVersion for create, update, then timerStart', async () => {
+    await queue.createDailyTask(DAILY_ID, {
+      sourceTaskId: null, date: '2026-07-13', title: 'Vocabulary',
+      subject: 'English', pomodoroTarget: 2,
+      timerPreset: '25-5', sortOrder: 0,
+    });
+    await queue.updateDailyTask(DAILY_ID, { pomodoroTarget: 3 });
+    const start = await queue.startTimerForDailyTask(
+      TIMER_ID, DAILY_ID, 'focus', 1_500,
+    );
+    expect(start.operation).toMatchObject({
+      operationType: 'timerStart',
+      payload: { dailyTaskId: DAILY_ID, dailyTaskVersion: 2 },
+    });
+  });
+
+  it('predicts addToToday, update, then timerStart after IndexedDB restart', async () => {
+    await queue.createTask(TASK_ID, createPayload);
+    await queue.addToToday(DAILY_ID, {
+      sourceTaskId: TASK_ID,
+      date: '2026-07-13',
+      sortOrder: 0,
+    });
+    await queue.updateDailyTask(DAILY_ID, { pomodoroTarget: 5 });
+    const name = database.name;
+    database.close();
+    database = createSyncDatabase(name);
+    await database.open();
+    queue = new OfflineOperationQueue(database, USER_A);
+    const start = await queue.startTimerForDailyTask(
+      TIMER_ID, DAILY_ID, 'focus', 1_500,
+    );
+    expect(start.operation).toMatchObject({
+      operationType: 'timerStart',
+      payload: { dailyTaskId: DAILY_ID, dailyTaskVersion: 2 },
+    });
+  });
+
+  it('enqueues completion once across concurrent calls and database restart', async () => {
+    await queue.startTimerForDailyTask(
+      TIMER_ID,
+      (await queue.createDailyTask(DAILY_ID, {
+        sourceTaskId: null, date: '2026-07-13', title: 'Vocabulary',
+        subject: 'English', pomodoroTarget: 2,
+        timerPreset: '25-5', sortOrder: 0,
+      })).operation.entityId,
+      'focus',
+      1,
+    );
+    const [first, second] = await Promise.all([
+      queue.completeTimerOnce(TIMER_ID),
+      queue.completeTimerOnce(TIMER_ID),
+    ]);
+    expect(first.operationId).toBe(second.operationId);
+    const name = database.name;
+    database.close();
+    database = createSyncDatabase(name);
+    await database.open();
+    queue = new OfflineOperationQueue(database, USER_A);
+    const afterRestart = await queue.completeTimerOnce(TIMER_ID);
+    expect(afterRestart.operationId).toBe(first.operationId);
+    expect((await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerComplete',
+    )).toHaveLength(1);
+  });
+
+  it('acknowledges one rejected timer issue without touching other issues', async () => {
+    await queue.createDailyTask(DAILY_ID, {
+      sourceTaskId: null, date: '2026-07-13', title: 'Vocabulary',
+      subject: 'English', pomodoroTarget: 2,
+      timerPreset: '25-5', sortOrder: 0,
+    });
+    const start = await queue.startTimerForDailyTask(
+      TIMER_ID, DAILY_ID, 'focus', 1_500,
+    );
+    await database.operations.update(start.sequence ?? 0, { state: 'rejected' });
+    await database.syncIssues.bulkPut([
+      {
+        operationId: start.operationId, userId: USER_A,
+        errorCode: 'TIMER_ALREADY_ACTIVE', errorMessage: 'active',
+        operation: start.operation, createdAt: '2026-07-13T04:00:00.000Z',
+      },
+      {
+        operationId: '00000000-0000-4000-8000-000000000099', userId: USER_A,
+        errorCode: 'STALE_VERSION', errorMessage: 'task stale',
+        operation: (await queue.updateDailyTask(DAILY_ID, { title: 'Keep' })).operation,
+        createdAt: '2026-07-13T04:00:01.000Z',
+      },
+    ]);
+
+    await queue.acknowledgeTimerIssue(start.operationId);
+
+    expect(await database.operations.get(start.sequence ?? 0)).toBeUndefined();
+    expect(await database.syncIssues.get({ operationId: start.operationId }))
+      .toBeUndefined();
+    expect(await database.syncIssues.where('userId').equals(USER_A).count())
+      .toBe(1);
+  });
+
+  it('retries a compatible stale pause with a new id and current timer version', async () => {
+    const timer = activeTimer({ version: 4 });
+    await database.timerCache.put({
+      userId: USER_A,
+      serverTimer: timer,
+      projectedTimer: timer,
+      serverTime: NOW,
+      receivedAt: NOW,
+      clockOffsetMs: 0,
+      clockUncertaintyMs: 20,
+      pendingOperationIds: [],
+    });
+    const stale = await queue.enqueueOperation({
+      entityType: 'activeTimer', entityId: TIMER_ID,
+      operationType: 'timerPause', baseVersion: 1,
+      payload: { reason: '临时有事' },
+    });
+    await database.operations.update(stale.sequence ?? 0, {
+      state: 'rejected',
+      lastError: { code: 'STALE_TIMER_VERSION', message: 'stale' },
+    });
+    const before = structuredClone(
+      await database.operations.get(stale.sequence ?? 0),
+    );
+
+    const retry = await queue.retryTimerOperation(stale.operationId);
+
+    expect(retry.operationId).not.toBe(stale.operationId);
+    expect(retry.operation).toMatchObject({
+      operationType: 'timerPause', baseVersion: 4,
+      payload: { reason: '临时有事' },
+    });
+    expect(await database.operations.get(stale.sequence ?? 0)).toEqual(before);
+  });
+
+  it('deduplicates rapid timer starts before the live projection renders', async () => {
+    await queue.createDailyTask(DAILY_ID, {
+      sourceTaskId: null, date: '2026-07-13', title: 'Vocabulary',
+      subject: 'English', pomodoroTarget: 2,
+      timerPreset: '25-5', sortOrder: 0,
+    });
+    const [first, second] = await Promise.all([
+      queue.startTimerForDailyTask(TIMER_ID, DAILY_ID, 'focus', 1_500),
+      queue.startTimerForDailyTask(
+        '00000000-0000-4000-8000-000000000041',
+        DAILY_ID,
+        'focus',
+        1_500,
+      ),
+    ]);
+    expect(second.operationId).toBe(first.operationId);
+    expect((await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerStart',
+    )).toHaveLength(1);
   });
 });

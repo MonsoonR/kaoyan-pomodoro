@@ -26,7 +26,17 @@ export interface LocalTimerProjection {
   dailyTaskId: string;
   phase: 'focus' | 'short_break' | 'long_break';
   plannedSeconds: number;
-  status: 'starting' | 'running' | 'pausing' | 'paused' | 'resuming';
+  startedAt: string;
+  targetEndAt: string;
+  pausedAt: string | null;
+  status:
+    | 'starting'
+    | 'running'
+    | 'pausing'
+    | 'paused'
+    | 'resuming'
+    | 'completing'
+    | 'exiting';
   version: number;
   reason: string | null;
 }
@@ -154,6 +164,14 @@ export function isTimerProjection(
     'plannedSeconds' in value &&
     'dailyTaskId' in value &&
     'status' in value &&
-    ['running', 'paused', 'starting', 'pausing', 'resuming']
+    [
+      'running',
+      'paused',
+      'starting',
+      'pausing',
+      'resuming',
+      'completing',
+      'exiting',
+    ]
       .includes(value.status);
 }
