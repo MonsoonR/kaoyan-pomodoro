@@ -115,12 +115,66 @@ describe('timer server clock', () => {
       uncertaintyMs: 400,
       calibration: 'calibrated',
       reliable: true,
-    })).toBe(false);
+    }, { provisional: false })).toBe(false);
     expect(shouldAutoCompleteTimer(timer, {
       nowMs: localNowMs + 400,
       uncertaintyMs: 400,
       calibration: 'calibrated',
       reliable: true,
-    })).toBe(true);
+    }, { provisional: false })).toBe(true);
+  });
+
+  it('uses high uncertainty as a safety boundary before completing', () => {
+    const timer = activeTimer({
+      targetEndAt: '2026-07-13T04:10:00.000Z',
+    });
+    expect(shouldAutoCompleteTimer(timer, {
+      nowMs: localNowMs + 4_999,
+      uncertaintyMs: 5_000,
+      calibration: 'uncertain',
+      reliable: false,
+    }, { provisional: false })).toBe(false);
+    expect(shouldAutoCompleteTimer(timer, {
+      nowMs: localNowMs + 5_000,
+      uncertaintyMs: 5_000,
+      calibration: 'uncertain',
+      reliable: false,
+    }, { provisional: false })).toBe(true);
+  });
+
+  it('keeps the known uncertainty boundary for stale calibration', () => {
+    const timer = activeTimer({
+      targetEndAt: '2026-07-13T04:10:00.000Z',
+    });
+    expect(shouldAutoCompleteTimer(timer, {
+      nowMs: localNowMs + 999,
+      uncertaintyMs: 1_000,
+      calibration: 'stale',
+      reliable: false,
+    }, { provisional: false })).toBe(false);
+    expect(shouldAutoCompleteTimer(timer, {
+      nowMs: localNowMs + 1_000,
+      uncertaintyMs: 1_000,
+      calibration: 'stale',
+      reliable: false,
+    }, { provisional: false })).toBe(true);
+  });
+
+  it('blocks an uncalibrated confirmed timer but allows a provisional timer', () => {
+    const timer = activeTimer({
+      targetEndAt: '2026-07-13T04:10:00.000Z',
+    });
+    const missingClock = {
+      nowMs: localNowMs,
+      uncertaintyMs: 0,
+      calibration: 'missing' as const,
+      reliable: false,
+    };
+    expect(shouldAutoCompleteTimer(
+      timer, missingClock, { provisional: false },
+    )).toBe(false);
+    expect(shouldAutoCompleteTimer(
+      timer, missingClock, { provisional: true },
+    )).toBe(true);
   });
 });

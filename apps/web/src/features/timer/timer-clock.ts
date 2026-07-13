@@ -65,13 +65,15 @@ export function formatTimerClock(milliseconds: number): string {
 export function shouldAutoCompleteTimer(
   timer: VisibleTimer,
   clock: EstimatedServerClock,
+  source: { provisional: boolean },
 ): boolean {
   if (timer.status !== 'running' && timer.status !== 'starting' &&
       timer.status !== 'resuming') return false;
-  const conservativeDelay = clock.calibration === 'calibrated'
-    ? clock.uncertaintyMs
-    : 0;
-  return clock.nowMs - conservativeDelay >= Date.parse(timer.targetEndAt);
+  const targetEndMs = Date.parse(timer.targetEndAt);
+  if (source.provisional) return clock.nowMs >= targetEndMs;
+  if (clock.calibration === 'missing') return false;
+  const earliestPossibleServerNow = clock.nowMs - clock.uncertaintyMs;
+  return earliestPossibleServerNow >= targetEndMs;
 }
 
 export function calibrationLabel(clock: EstimatedServerClock): string {

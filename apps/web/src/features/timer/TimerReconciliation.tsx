@@ -1,5 +1,14 @@
 import { AlertTriangle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { TimerReconciliationModel } from './timer-view-model';
+
+type ReconciliationBusy = 'adopt' | 'retry' | 'switch';
+
+const BUSY_LABELS: Record<ReconciliationBusy, string> = {
+  adopt: '正在采用服务器状态…',
+  retry: '正在重新执行操作…',
+  switch: '正在切换到当前计时器…',
+};
 
 export function TimerReconciliation({
   model,
@@ -12,6 +21,35 @@ export function TimerReconciliation({
   onRetry: () => void | Promise<void>;
   onSwitch: () => void | Promise<void>;
 }) {
+  const [busy, setBusy] = useState<ReconciliationBusy | null>(null);
+  const [error, setError] = useState('');
+  const busyRef = useRef<ReconciliationBusy | null>(null);
+
+  useEffect(() => {
+    busyRef.current = null;
+    setBusy(null);
+    setError('');
+  }, [model.operationId]);
+
+  const runAction = async (
+    nextBusy: ReconciliationBusy,
+    action: () => void | Promise<void>,
+  ) => {
+    if (busyRef.current) return;
+    busyRef.current = nextBusy;
+    setBusy(nextBusy);
+    setError('');
+    try {
+      await action();
+    } catch (reason) {
+      busyRef.current = null;
+      setBusy(null);
+      setError(reason instanceof Error
+        ? reason.message
+        : '计时器状态处理失败，请重试');
+    }
+  };
+
   return <section className="timer-reconciliation" role="alert">
     <div className="timer-reconciliation__title">
       <AlertTriangle aria-hidden="true" />
@@ -24,15 +62,17 @@ export function TimerReconciliation({
       <div><dt>服务器状态</dt><dd>{model.serverDescription}</dd></div>
       <div><dt>错误代码</dt><dd>{model.errorCode}</dd></div>
     </dl>
+    {error ? <p className="form-error" role="alert">{error}</p> : null}
+    {busy ? <p role="status" className="sr-only">{BUSY_LABELS[busy]}</p> : null}
     <div className="timer-reconciliation__actions">
-      <button className="button button--primary" type="button" onClick={() => void onAdopt()}>
-        采用服务器状态
+      <button className="button button--primary" type="button" disabled={busy !== null} onClick={() => void runAction('adopt', onAdopt)}>
+        {busy === 'adopt' ? '正在采用…' : '采用服务器状态'}
       </button>
-      {model.canRetry ? <button className="button button--outline" type="button" onClick={() => void onRetry()}>
-        重新执行{model.attemptedAction}
+      {model.canRetry ? <button className="button button--outline" type="button" disabled={busy !== null} onClick={() => void runAction('retry', onRetry)}>
+        {busy === 'retry' ? '正在重新执行…' : `重新执行${model.attemptedAction}`}
       </button> : null}
-      {model.canSwitchToTimer ? <button className="button button--outline" type="button" onClick={() => void onSwitch()}>
-        切换到当前计时器
+      {model.canSwitchToTimer ? <button className="button button--outline" type="button" disabled={busy !== null} onClick={() => void runAction('switch', onSwitch)}>
+        {busy === 'switch' ? '正在切换…' : '切换到当前计时器'}
       </button> : null}
     </div>
   </section>;

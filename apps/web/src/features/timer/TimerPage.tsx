@@ -49,10 +49,12 @@ export function TimerPage({
 
   useEffect(() => {
     if (!timer || viewModel.state === 'reconciling' ||
-        !shouldAutoCompleteTimer(timer, clock)) return;
+        !shouldAutoCompleteTimer(timer, clock, {
+          provisional: viewModel.provisional,
+        })) return;
     void queue.completeTimerOnce(timer.id).catch((error: unknown) =>
       onMessage(error instanceof Error ? error.message : '完成计时器失败', true));
-  }, [clock, onMessage, queue, timer, viewModel.state]);
+  }, [clock, onMessage, queue, timer, viewModel.provisional, viewModel.state]);
 
   if (!timer) {
     const awaitingConfirmation = task?.status === 'awaiting_confirmation';

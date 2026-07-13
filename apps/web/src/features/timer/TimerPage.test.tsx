@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { StrictMode } from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSyncDatabase, type SyncDatabase } from '../../db/database';
 import type { TimerStateSnapshot } from './use-timer-state';
@@ -76,6 +81,180 @@ describe('timer page', () => {
       (row) => row.operation.operationType === 'timerComplete',
     )).toHaveLength(1));
     expect(screen.getByLabelText('剩余时间 00:00')).toBeTruthy();
+  });
+
+  it('does not complete a confirmed timer before a high-uncertainty boundary', async () => {
+    const target = Date.parse('2026-07-13T04:10:00.000Z');
+    const timer = activeTimer({ targetEndAt: new Date(target).toISOString() });
+    await database.timerCache.put({
+      userId: USER_A, serverTimer: timer, projectedTimer: timer,
+      serverTime: NOW, receivedAt: NOW, clockOffsetMs: 0,
+      clockUncertaintyMs: 5_000, pendingOperationIds: [],
+    });
+    render(<TimerPage
+      timerState={{
+        ...snapshot(timer),
+        clock: {
+          nowMs: target + 4_999,
+          uncertaintyMs: 5_000,
+          calibration: 'uncertain',
+          reliable: false,
+        },
+      }}
+      task={dailyTask()}
+      queue={queue}
+      onBack={vi.fn()}
+      onStartPhase={vi.fn()}
+      onConfirmTask={vi.fn()}
+      onTimerSwitch={vi.fn()}
+      onManualSync={vi.fn()}
+      onMessage={vi.fn()}
+    />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await database.operations.count()).toBe(0);
+  });
+
+  it('completes once when a high-uncertainty safety boundary is reached', async () => {
+    const target = Date.parse('2026-07-13T04:10:00.000Z');
+    const timer = activeTimer({ targetEndAt: new Date(target).toISOString() });
+    await database.timerCache.put({
+      userId: USER_A, serverTimer: timer, projectedTimer: timer,
+      serverTime: NOW, receivedAt: NOW, clockOffsetMs: 0,
+      clockUncertaintyMs: 5_000, pendingOperationIds: [],
+    });
+    const timerState = {
+      ...snapshot(timer),
+      clock: {
+        nowMs: target + 5_000,
+        uncertaintyMs: 5_000,
+        calibration: 'uncertain' as const,
+        reliable: false,
+      },
+    };
+    const props = {
+      timerState,
+      task: dailyTask(),
+      queue,
+      onBack: vi.fn(),
+      onStartPhase: vi.fn(),
+      onConfirmTask: vi.fn(),
+      onTimerSwitch: vi.fn(),
+      onManualSync: vi.fn(),
+      onMessage: vi.fn(),
+    };
+    const { rerender } = render(<StrictMode><TimerPage {...props} /></StrictMode>);
+    rerender(<StrictMode><TimerPage {...props} /></StrictMode>);
+    await waitFor(async () => expect((await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerComplete',
+    )).toHaveLength(1));
+  });
+
+  it('does not immediately complete again after adopting TIMER_NOT_ELAPSED', async () => {
+    const target = Date.parse('2026-07-13T04:10:00.000Z');
+    const timer = activeTimer({ targetEndAt: new Date(target).toISOString() });
+    await database.timerCache.put({
+      userId: USER_A, serverTimer: timer, projectedTimer: timer,
+      serverTime: NOW, receivedAt: NOW, clockOffsetMs: 0,
+      clockUncertaintyMs: 5_000, pendingOperationIds: [],
+    });
+    const rejected = await queue.completeTimer(timer.id);
+    await database.operations.update(rejected.sequence ?? 0, { state: 'rejected' });
+    await database.syncIssues.put({
+      operationId: rejected.operationId,
+      userId: USER_A,
+      errorCode: 'TIMER_NOT_ELAPSED',
+      errorMessage: 'not elapsed',
+      operation: rejected.operation,
+      createdAt: NOW,
+    });
+    const baseState = {
+      ...snapshot(timer),
+      clock: {
+        nowMs: target + 1_000,
+        uncertaintyMs: 5_000,
+        calibration: 'uncertain' as const,
+        reliable: false,
+      },
+    };
+    const props = {
+      task: dailyTask(), queue, onBack: vi.fn(), onStartPhase: vi.fn(),
+      onConfirmTask: vi.fn(), onTimerSwitch: vi.fn(), onManualSync: vi.fn(),
+      onMessage: vi.fn(),
+    };
+    const { rerender } = render(<TimerPage
+      {...props}
+      timerState={{
+        ...baseState,
+        viewModel: {
+          ...baseState.viewModel,
+          state: 'reconciling',
+          reconciliation: {
+            operationId: rejected.operationId,
+            operationCreatedAt: NOW,
+            attemptedAction: '完成',
+            errorCode: 'TIMER_NOT_ELAPSED',
+            explanation: '服务器时间显示计时器尚未到时，将继续倒计时。',
+            serverDescription: '服务器计时器当前为运行中',
+            canRetry: true,
+            canSwitchToTimer: false,
+          },
+        },
+      }}
+    />);
+    screen.getByRole('button', { name: '采用服务器状态' }).click();
+    await waitFor(async () => expect(await database.operations.get(
+      rejected.sequence ?? 0,
+    )).toBeUndefined());
+    rerender(<TimerPage {...props} timerState={baseState} />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerComplete',
+    )).toHaveLength(0);
+  });
+
+  it('still completes a provisional offline timer from local time once', async () => {
+    const target = Date.parse('2026-07-13T04:10:00.000Z');
+    queue = new OfflineOperationQueue(database, USER_A, {
+      now: () => new Date(target - 1_500_000),
+    });
+    await queue.startTimer(activeTimer().id, {
+      dailyTaskId: dailyTask().id,
+      dailyTaskVersion: 1,
+      phase: 'focus',
+      plannedSeconds: 1_500,
+    });
+    const timer = (await database.timerCache.get(USER_A))?.projectedTimer;
+    if (!timer) throw new Error('Expected a provisional timer projection');
+    render(<StrictMode><TimerPage
+      timerState={{
+        ...snapshot(activeTimer()),
+        viewModel: {
+          ...snapshot(activeTimer()).viewModel,
+          state: 'starting',
+          timer,
+          serverTimer: null,
+          pending: true,
+          provisional: true,
+        },
+        clock: {
+          nowMs: target,
+          uncertaintyMs: 0,
+          calibration: 'missing',
+          reliable: false,
+        },
+      }}
+      task={dailyTask()}
+      queue={queue}
+      onBack={vi.fn()}
+      onStartPhase={vi.fn()}
+      onConfirmTask={vi.fn()}
+      onTimerSwitch={vi.fn()}
+      onManualSync={vi.fn()}
+      onMessage={vi.fn()}
+    /></StrictMode>);
+    await waitFor(async () => expect((await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerComplete',
+    )).toHaveLength(1));
   });
 
   it('never auto-completes a paused timer', async () => {

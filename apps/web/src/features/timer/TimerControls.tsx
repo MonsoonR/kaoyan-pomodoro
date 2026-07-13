@@ -1,5 +1,5 @@
 import { Pause, Play, Square } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../../components.jsx';
 import type { TimerViewState } from './timer-view-model';
 
@@ -19,6 +19,18 @@ const PENDING_LABELS: Partial<Record<TimerViewState, string>> = {
   exiting: '正在退出，等待同步',
 };
 
+type LocalBusyState = 'pausing' | 'resuming' | 'exiting';
+
+const LOCAL_BUSY_LABELS: Record<LocalBusyState, string> = {
+  pausing: '正在暂停…',
+  resuming: '正在继续…',
+  exiting: '正在退出…',
+};
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : '计时器操作失败，请重试';
+}
+
 export function TimerControls({
   state,
   onPause,
@@ -34,9 +46,50 @@ export function TimerControls({
   const [selectedReason, setSelectedReason] = useState<string>('临时有事');
   const [customReason, setCustomReason] = useState('');
   const [error, setError] = useState('');
-  const pendingLabel = PENDING_LABELS[state];
+  const [busy, setBusy] = useState<LocalBusyState | null>(null);
+  const busyRef = useRef<LocalBusyState | null>(null);
+  const busyOriginRef = useRef<TimerViewState | null>(null);
+  const busySettledRef = useRef(false);
+  const stateRef = useRef(state);
+
+  const clearBusy = () => {
+    busyRef.current = null;
+    busyOriginRef.current = null;
+    busySettledRef.current = false;
+    setBusy(null);
+  };
+
+  useEffect(() => {
+    stateRef.current = state;
+    if (busyRef.current && busySettledRef.current &&
+        state !== busyOriginRef.current) clearBusy();
+  }, [state]);
+
+  const runControl = async (
+    nextBusy: LocalBusyState,
+    action: () => void | Promise<unknown>,
+  ) => {
+    if (busyRef.current) return;
+    busyRef.current = nextBusy;
+    busyOriginRef.current = stateRef.current;
+    busySettledRef.current = false;
+    setBusy(nextBusy);
+    setError('');
+    try {
+      await action();
+      busySettledRef.current = true;
+      if (stateRef.current !== busyOriginRef.current) clearBusy();
+    } catch (reason) {
+      setError(errorMessage(reason));
+      clearBusy();
+    }
+  };
+
+  const pendingLabel = PENDING_LABELS[state] ??
+    (busy ? LOCAL_BUSY_LABELS[busy] : undefined);
   const submitExit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (busyRef.current) return;
     const reason = selectedReason === '其他'
       ? customReason.trim()
       : selectedReason;
@@ -48,11 +101,13 @@ export function TimerControls({
       setError('退出原因不能超过 500 个字符');
       return;
     }
-    await onExit(reason);
-    setExitOpen(false);
+    await runControl('exiting', async () => {
+      await onExit(reason);
+      setExitOpen(false);
+    });
   };
 
-  if (pendingLabel) {
+  if (pendingLabel && !exitOpen) {
     return <div className="focus-actions">
       <button className="button button--primary button--large" type="button" disabled>
         {pendingLabel}
@@ -67,22 +122,36 @@ export function TimerControls({
         className="button button--outline button--large"
         type="button"
         aria-label="暂停计时器"
-        onClick={() => void onPause('手动暂停')}
+        disabled={busy !== null}
+        onClick={() => void runControl(
+          'pausing', () => onPause('手动暂停'),
+        )}
       ><Pause size={18} />暂停</button> : null}
       {state === 'paused' ? <button
         className="button button--primary button--large"
         type="button"
         aria-label="继续计时器"
-        onClick={() => void onResume()}
+        disabled={busy !== null}
+        onClick={() => void runControl('resuming', onResume)}
       ><Play size={18} />继续</button> : null}
       {(state === 'running' || state === 'paused') ? <button
         className="button button--danger-ghost button--large"
         type="button"
         aria-label="提前退出计时器"
+        disabled={busy !== null}
         onClick={() => setExitOpen(true)}
       ><Square size={17} />提前退出</button> : null}
+      {busy ? <span role="status" className="sr-only">
+        {LOCAL_BUSY_LABELS[busy]}
+      </span> : null}
     </div>
-    <Modal open={exitOpen} title="提前退出" onClose={() => setExitOpen(false)}>
+    {!exitOpen && error ? <p className="form-error" role="alert">{error}</p> : null}
+    <Modal
+      open={exitOpen}
+      title="提前退出"
+      dismissible={busy === null}
+      onClose={() => { if (!busyRef.current) setExitOpen(false); }}
+    >
       <form onSubmit={submitExit}>
         <p className="dialog-copy">选择退出原因。服务器会生成一条中断的专注记录。</p>
         <div className="reason-list">
@@ -95,6 +164,7 @@ export function TimerControls({
               name="exit-reason"
               value={reason}
               checked={selectedReason === reason}
+              disabled={busy !== null}
               onChange={() => { setSelectedReason(reason); setError(''); }}
             />
             {reason}
@@ -105,13 +175,19 @@ export function TimerControls({
           <input
             value={customReason}
             maxLength={500}
+            disabled={busy !== null}
             onChange={(event) => { setCustomReason(event.target.value); setError(''); }}
           />
         </label> : null}
         {error ? <p className="form-error" role="alert">{error}</p> : null}
         <div className="form-actions">
-          <button className="button button--ghost" type="button" onClick={() => setExitOpen(false)}>取消</button>
-          <button className="button button--danger-ghost" type="submit">确认退出</button>
+          <button className="button button--ghost" type="button" disabled={busy !== null} onClick={() => setExitOpen(false)}>取消</button>
+          <button className="button button--danger-ghost" type="submit" disabled={busy !== null}>
+            {busy === 'exiting' ? '正在退出…' : '确认退出'}
+          </button>
+          {busy === 'exiting' ? <span role="status" className="sr-only">
+            正在退出…
+          </span> : null}
         </div>
       </form>
     </Modal>
