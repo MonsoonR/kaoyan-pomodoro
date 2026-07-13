@@ -2,6 +2,7 @@
 import { StrictMode } from 'react';
 import {
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -210,6 +211,84 @@ describe('timer page', () => {
     expect((await database.operations.toArray()).filter(
       (row) => row.operation.operationType === 'timerComplete',
     )).toHaveLength(0);
+  });
+
+  it('settles a real stale retry while the original issue remains visible', async () => {
+    const timer = activeTimer({ version: 4 });
+    await database.timerCache.put({
+      userId: USER_A, serverTimer: timer, projectedTimer: timer,
+      serverTime: NOW, receivedAt: NOW, clockOffsetMs: 0,
+      clockUncertaintyMs: 20, pendingOperationIds: [],
+    });
+    const rejected = await queue.enqueueOperation({
+      entityType: 'activeTimer', entityId: timer.id,
+      operationType: 'timerPause', baseVersion: 1,
+      payload: { reason: '临时有事' },
+    });
+    await database.operations.update(rejected.sequence ?? 0, {
+      state: 'rejected',
+      lastError: { code: 'STALE_TIMER_VERSION', message: 'stale' },
+    });
+    await database.syncIssues.put({
+      operationId: rejected.operationId,
+      userId: USER_A,
+      errorCode: 'STALE_TIMER_VERSION',
+      errorMessage: 'stale',
+      operation: rejected.operation,
+      createdAt: NOW,
+    });
+    const timerState: TimerStateSnapshot = {
+      ...snapshot(timer),
+      viewModel: {
+        ...snapshot(timer).viewModel,
+        state: 'reconciling',
+        reconciliation: {
+          operationId: rejected.operationId,
+          operationCreatedAt: NOW,
+          attemptedAction: '暂停',
+          errorCode: 'STALE_TIMER_VERSION',
+          explanation: '操作基于旧的计时器版本，服务器状态已变化。',
+          serverDescription: '服务器计时器当前为运行中',
+          canRetry: true,
+          canSwitchToTimer: true,
+        },
+      },
+    };
+    render(<TimerPage
+      timerState={timerState}
+      task={dailyTask()}
+      queue={queue}
+      onBack={vi.fn()}
+      onStartPhase={vi.fn()}
+      onConfirmTask={vi.fn()}
+      onTimerSwitch={vi.fn()}
+      onManualSync={vi.fn()}
+      onMessage={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新执行暂停' }));
+
+    expect(await screen.findByRole('button', {
+      name: '已重新提交，等待同步',
+    })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '采用服务器状态' }))
+      .toHaveProperty('disabled', false);
+    expect(await database.syncIssues.get({ operationId: rejected.operationId }))
+      .toBeTruthy();
+    const afterRetry = (await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerPause',
+    );
+    expect(afterRetry).toHaveLength(2);
+    expect(afterRetry[1]?.operationId).not.toBe(rejected.operationId);
+    expect(afterRetry[0]?.state).toBe('rejected');
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '已重新提交，等待同步',
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await database.operations.toArray()).filter(
+      (row) => row.operation.operationType === 'timerPause',
+    )).toHaveLength(2);
   });
 
   it('still completes a provisional offline timer from local time once', async () => {
