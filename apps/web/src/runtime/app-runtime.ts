@@ -148,16 +148,16 @@ export class AppRuntime {
 
   async authenticationRequired(): Promise<void> {
     this.engine.pauseForAuthentication?.();
-    const userId = this.snapshot.activeUserId;
-    if (userId) {
-      const metadata = await this.database.getOrCreateMetadata(userId);
-      await this.database.metadata.put({ ...metadata, authState: 'required' });
-    }
     this.update({
       authMode: 'authRequired',
       session: null,
       firstLoginOffline: false,
     });
+    const userId = this.snapshot.activeUserId;
+    if (userId) {
+      const metadata = await this.database.getOrCreateMetadata(userId);
+      await this.database.metadata.put({ ...metadata, authState: 'required' });
+    }
   }
 
   manualSync(): Promise<void> {
@@ -279,6 +279,7 @@ export class AppRuntime {
   }
 
   private update(patch: Partial<RuntimeSnapshot>): void {
+    if (this.disposed) return;
     this.snapshot = { ...this.snapshot, ...patch };
     for (const listener of this.listeners) listener();
   }

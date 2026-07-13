@@ -1,10 +1,32 @@
+import type {
+  PullChangesResponse,
+  PushOperationsResponse,
+  SyncOperation,
+} from '@kaoyan/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSyncDatabase, type SyncDatabase } from '../db/database';
 import { replicaKey } from '../db/types';
+import { SyncEngine } from '../sync/engine';
 import { NOW, session, TASK_ID, USER_A } from '../test/fixtures';
+import { FakeApiClient } from '../test/fake-api';
 import { AuthRequiredError, NetworkError } from '../sync/errors';
 import { SyncStatusStore } from '../sync/status';
 import { AppRuntime } from './app-runtime';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function accountApi() {
+  return Object.assign(new FakeApiClient(), {
+    login: vi.fn(async () => session()),
+    logout: vi.fn(async () => ({ ok: true as const })),
+  });
+}
 
 describe('application runtime lifecycle', () => {
   const databases: SyncDatabase[] = [];
@@ -301,5 +323,216 @@ describe('application runtime lifecycle', () => {
     expect((await database.metadata.get(USER_A))?.cursor).toBe(11);
     release();
     await setup.runtime.closed();
+  });
+
+  it('keeps logout authoritative after an old in-flight sync returns', async () => {
+    const database = createSyncDatabase(`runtime-inflight-logout-${crypto.randomUUID()}`);
+    databases.push(database);
+    const api = accountApi();
+    const pull = deferred<PullChangesResponse>();
+    const pullStarted = deferred<void>();
+    api.pullChanges = async (cursor: number) => {
+      api.calls.push(`pull:${cursor}`);
+      pullStarted.resolve();
+      return pull.promise;
+    };
+    const engine = new SyncEngine({ database, api, now: () => new Date(NOW) });
+    const scheduler = { start: vi.fn(), stop: vi.fn() };
+    const runtime = new AppRuntime({
+      database, api: api as never, engine, scheduler,
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    const oldCycle = engine.manualSync();
+    await pullStarted.promise;
+    const operation = await runtime.queueFor(USER_A).createTask(TASK_ID, {
+      title: 'In-flight retained task', subject: 'Math',
+      defaultPomodoroTarget: 2, defaultTimerPreset: '25-5', notes: null,
+    });
+
+    await runtime.logout();
+    expect(runtime.getSnapshot()).toMatchObject({
+      authMode: 'authRequired', session: null,
+    });
+    pull.resolve({ changes: [], nextCursor: 0, hasMore: false });
+    await oldCycle;
+
+    expect((await database.metadata.get(USER_A))?.authState).toBe('required');
+    expect(engine.status.getSnapshot().phase).not.toBe('synced');
+    expect((await database.operations.get(operation.sequence ?? 0))).toMatchObject({
+      operationId: operation.operationId, state: 'pending',
+    });
+    expect((await database.replicas.get(replicaKey(USER_A, 'task', TASK_ID)))
+      ?.projectedValue).toMatchObject({ title: 'In-flight retained task' });
+    release();
+    await runtime.closed();
+
+    const restarted = runtimeWith(database, async () => { throw new NetworkError(); });
+    const releaseRestarted = restarted.runtime.acquire();
+    await restarted.runtime.ready();
+    expect(restarted.runtime.getSnapshot().authMode).toBe('authRequired');
+    releaseRestarted();
+    await restarted.runtime.closed();
+  });
+
+  it('resumes the original operation after login without an old cycle committing it', async () => {
+    const database = createSyncDatabase(`runtime-inflight-login-${crypto.randomUUID()}`);
+    databases.push(database);
+    const api = accountApi();
+    const firstPush = deferred<PushOperationsResponse>();
+    const pushStarted = deferred<void>();
+    const pushedBatches: SyncOperation[][] = [];
+    let pushCount = 0;
+    api.pushOperations = async (operations: readonly SyncOperation[]) => {
+      const batch = [...operations];
+      pushedBatches.push(batch);
+      pushCount += 1;
+      if (pushCount === 1) {
+        pushStarted.resolve();
+        return firstPush.promise;
+      }
+      return {
+        receipts: batch.map((operation) => ({
+          operationId: operation.operationId,
+          status: 'duplicate' as const,
+          entityVersion: 1,
+          conflictId: null,
+          errorCode: null,
+          errorMessage: null,
+        })),
+        latestCursor: 0,
+      };
+    };
+    const refreshed = {
+      ...session(), deviceName: 'New authenticated laptop',
+      expiresAt: '2026-07-16T04:00:00.000Z',
+    };
+    api.login.mockResolvedValue(refreshed);
+    const engine = new SyncEngine({ database, api, now: () => new Date(NOW) });
+    const runtime = new AppRuntime({
+      database,
+      api: api as never,
+      engine,
+      scheduler: { start: vi.fn(), stop: vi.fn() },
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    const operation = await runtime.queueFor(USER_A).createTask(TASK_ID, {
+      title: 'Resume same operation', subject: 'Math',
+      defaultPomodoroTarget: 2, defaultTimerPreset: '25-5', notes: null,
+    });
+    const oldCycle = engine.manualSync();
+    await pushStarted.promise;
+    await runtime.authenticationRequired();
+    api.sessions.push(refreshed, refreshed);
+    const login = runtime.login('learner', 'secure password');
+    await vi.waitFor(() => {
+      expect(runtime.getSnapshot().session?.deviceName)
+        .toBe('New authenticated laptop');
+    });
+    firstPush.resolve({
+      receipts: [{
+        operationId: operation.operationId,
+        status: 'applied', entityVersion: 1, conflictId: null,
+        errorCode: null, errorMessage: null,
+      }],
+      latestCursor: 0,
+    });
+    await Promise.all([oldCycle, login]);
+    await vi.waitFor(() => {
+      expect(runtime.getSnapshot()).toMatchObject({
+        authMode: 'authenticated', session: refreshed,
+      });
+    });
+
+    expect(pushedBatches).toHaveLength(2);
+    expect(pushedBatches.map((batch) => batch[0]?.operationId))
+      .toEqual([operation.operationId, operation.operationId]);
+    expect(await database.operations.get(operation.sequence ?? 0)).toMatchObject({
+      operationId: operation.operationId,
+      state: 'acknowledged',
+      receipt: { status: 'duplicate' },
+    });
+    expect(await database.metadata.get(USER_A)).toMatchObject({
+      authState: 'authenticated',
+      deviceName: refreshed.deviceName,
+      sessionExpiresAt: refreshed.expiresAt,
+    });
+    release();
+    await runtime.closed();
+  });
+
+  it('handles engine 401 and repeated runtime pause without deadlock', async () => {
+    const database = createSyncDatabase(`runtime-engine-401-${crypto.randomUUID()}`);
+    databases.push(database);
+    const api = accountApi();
+    const engine = new SyncEngine({ database, api, now: () => new Date(NOW) });
+    const runtime = new AppRuntime({
+      database,
+      api: api as never,
+      engine,
+      scheduler: { start: vi.fn(), stop: vi.fn() },
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    api.sessions.push(new AuthRequiredError());
+    await expect(engine.manualSync()).resolves.toBeUndefined();
+    expect(await database.metadata.get(USER_A)).toMatchObject({
+      authState: 'required',
+    });
+    expect(engine.status.getSnapshot().phase).toBe('authRequired');
+    expect(runtime.getSnapshot().authMode).toBe('authRequired');
+
+    const refreshed = { ...session(), deviceName: 'Reauthenticated laptop' };
+    api.login.mockResolvedValue(refreshed);
+    api.sessions.push(refreshed, refreshed);
+    await runtime.login('learner', 'secure password');
+    await vi.waitFor(() => {
+      expect(runtime.getSnapshot()).toMatchObject({
+        authMode: 'authenticated', session: refreshed,
+      });
+    });
+    release();
+    await runtime.closed();
+  });
+
+  it('closes an in-flight sync without publishing errors or synced state', async () => {
+    const database = createSyncDatabase(`runtime-inflight-close-${crypto.randomUUID()}`);
+    databases.push(database);
+    const close = vi.spyOn(database, 'close');
+    const api = accountApi();
+    const pull = deferred<PullChangesResponse>();
+    const pullStarted = deferred<void>();
+    let pullSignal: AbortSignal | undefined;
+    api.pullChanges = async (
+      cursor: number,
+      _limit?: number,
+      signal?: AbortSignal,
+    ) => {
+      api.calls.push(`pull:${cursor}`);
+      pullSignal = signal;
+      pullStarted.resolve();
+      return pull.promise;
+    };
+    const engine = new SyncEngine({ database, api, now: () => new Date(NOW) });
+    const scheduler = { start: vi.fn(), stop: vi.fn() };
+    const runtime = new AppRuntime({
+      database, api: api as never, engine, scheduler,
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    const snapshotBeforeClose = runtime.getSnapshot();
+    void engine.manualSync();
+    await pullStarted.promise;
+    release();
+    await vi.waitFor(() => expect(pullSignal?.aborted).toBe(true));
+    pull.resolve({ changes: [], nextCursor: 0, hasMore: false });
+    await runtime.closed();
+
+    expect(scheduler.stop).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(runtime.getSnapshot()).toBe(snapshotBeforeClose);
+    expect(engine.status.getSnapshot().phase).toBe('syncing');
+    expect(engine.status.getSnapshot().lastErrorCode).toBeNull();
   });
 });

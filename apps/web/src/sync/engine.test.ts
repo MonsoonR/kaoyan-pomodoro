@@ -48,6 +48,14 @@ function upsertTask(cursor: number, value = task()): PullChangesResponse {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe('synchronization engine', () => {
   let database: SyncDatabase;
   let queue: OfflineOperationQueue;
@@ -285,6 +293,37 @@ describe('synchronization engine', () => {
 
     await engine.resumeAfterAuthentication();
     expect(api.calls[0]).toBe('session');
+  });
+
+  it('aborts and fences an in-flight cycle when authentication is paused', async () => {
+    await database.setActiveUser(USER_A);
+    const pull = deferred<PullChangesResponse>();
+    const pullStarted = deferred<void>();
+    let pullSignal: AbortSignal | undefined;
+    api.pullChanges = async (
+      cursor: number,
+      _limit?: number,
+      signal?: AbortSignal,
+    ) => {
+      api.calls.push(`pull:${cursor}`);
+      pullSignal = signal;
+      pullStarted.resolve();
+      return pull.promise;
+    };
+
+    const running = engine.manualSync();
+    await pullStarted.promise;
+    engine.pauseForAuthentication();
+    await database.metadata.update(USER_A, { authState: 'required' });
+    const wasAborted = pullSignal?.aborted;
+    pull.resolve({ changes: [], nextCursor: 0, hasMore: false });
+    await expect(running).resolves.toBeUndefined();
+
+    expect(wasAborted).toBe(true);
+    expect((await database.metadata.get(USER_A))?.authState).toBe('required');
+    expect(engine.status.getSnapshot()).toMatchObject({
+      phase: 'syncing', lastErrorCode: null, lastErrorMessage: null,
+    });
   });
 
   it('never uploads the previous user queue after a different user logs in', async () => {
