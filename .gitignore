@@ -13,3 +13,4 @@ caddy-config/
 *.sqlite
 *.sqlite-*
 *.sqlite.gz
+.maintenance.lock

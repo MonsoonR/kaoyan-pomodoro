@@ -61,6 +61,13 @@ export async function createApp(options: AppOptions) {
     bodyLimit: BODY_LIMIT_BYTES,
     trustProxy: trustProxy === 0 ? false : trustProxy,
   });
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (request.url === '/api' || request.url.startsWith('/api/')) {
+      reply.header('Cache-Control', 'no-store');
+      reply.header('Pragma', 'no-cache');
+    }
+    return payload;
+  });
   const ownsDatabase = !options.database;
   const connection = options.database ?? openDatabase(':memory:');
   if (ownsDatabase) migrateDatabase(connection.db);

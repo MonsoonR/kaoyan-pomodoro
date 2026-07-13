@@ -16,3 +16,4 @@ caddy-config
 *.sqlite.gz
 *.pem
 *.key
+.maintenance.lock

@@ -2,6 +2,7 @@
 set -eu
 
 mode="${1:-manual}"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 case "$mode" in manual|daily|pre-update|pre-restore) ;; *) echo "Unsupported backup type" >&2; exit 64 ;; esac
 : "${DATABASE_PATH:=/var/lib/kaoyan/kaoyan.sqlite}"
 : "${BACKUP_DIR:=/backups}"
@@ -28,5 +29,5 @@ test "$(sqlite3 "$verified" 'PRAGMA integrity_check;')" = "ok" || { echo "Compre
 chmod 0600 "$tmpdir/archive.gz"
 mv "$tmpdir/archive.gz" "$final"
 echo "Backup created: $base" >&2
-/app/scripts/retention.sh
+"$SCRIPT_DIR/retention.sh"
 printf '%s\n' "$final"

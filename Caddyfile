@@ -16,7 +16,8 @@
 	@serviceWorker path /sw.js /workbox-*.js /manifest.webmanifest
 	header @serviceWorker Cache-Control "no-cache, no-store, must-revalidate"
 
-	@api path /api/*
+	@api path /api /api/*
+	header @api Cache-Control "no-store"
 	reverse_proxy @api api:3000
 	reverse_proxy web:8080
 }

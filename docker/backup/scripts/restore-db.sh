@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 archive="${1:?backup archive is required}"
-case "$archive" in /backups/kaoyan-????????T???????????????Z-*.sqlite.gz) ;; *) echo "Invalid backup path" >&2; exit 64 ;; esac
+backup_root="${BACKUP_DIR:-/backups}"
+case "$archive" in "$backup_root"/kaoyan-????????T???????????????Z-*.sqlite.gz) ;; *) echo "Invalid backup path" >&2; exit 64 ;; esac
+exec 9>"$backup_root/.backup.lock"
+flock 9
 test -f "$archive" && test ! -L "$archive" || exit 66
 db="${DATABASE_PATH:-/var/lib/kaoyan/kaoyan.sqlite}"
 dir="$(dirname "$db")"

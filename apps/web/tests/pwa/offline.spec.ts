@@ -12,6 +12,7 @@ test('production PWA reopens offline from IndexedDB without caching API data', a
   await page.getByRole('button', { name: '登录', exact: true }).click();
   const login = await loginResponse;
   expect(login.status(), await login.text()).toBe(200);
+  expect(login.headers()['cache-control']).toBe('no-store');
   await expect(page.getByRole('heading', { name: '今天也稳稳推进。' })).toBeVisible();
 
   await page.locator('.sidebar').getByRole('button', { name: '任务库', exact: true }).click();

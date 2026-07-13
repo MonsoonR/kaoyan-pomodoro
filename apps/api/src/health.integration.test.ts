@@ -29,6 +29,7 @@ describe('health endpoints', () => {
     const { app } = await appWithDatabase();
     const response = await app.inject({ method: 'GET', url: '/api/health/live' });
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
     expect(response.json()).toEqual({ status: 'ok' });
     await app.close();
   });
@@ -37,6 +38,7 @@ describe('health endpoints', () => {
     const { app } = await appWithDatabase();
     const response = await app.inject({ method: 'GET', url: '/api/health/ready' });
     expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
     expect(response.json()).toEqual({ status: 'ok' });
     await app.close();
   });
@@ -46,6 +48,7 @@ describe('health endpoints', () => {
     database.close();
     const response = await app.inject({ method: 'GET', url: '/api/health/ready' });
     expect(response.statusCode).toBe(503);
+    expect(response.headers['cache-control']).toBe('no-store');
     expect(response.json()).toEqual({
       status: 'error',
       code: 'NOT_READY',
