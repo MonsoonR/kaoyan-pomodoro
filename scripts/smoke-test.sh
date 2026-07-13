@@ -5,17 +5,24 @@ trap 'echo "Smoke test command failed at line $LINENO" >&2' ERR
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 project="kaoyan-smoke-$(date +%s)-$RANDOM"
-scratch="$(mktemp -d)"
+scratch="$(mktemp -d "$ROOT/.smoke-XXXXXX")"
+compose_scratch="$scratch"
+if [[ -n "${MSYSTEM:-}" ]] && command -v cygpath >/dev/null; then
+  compose_scratch="$(cygpath -w "$scratch")"
+fi
+data_host="$scratch/data"
+backup_host="$scratch/backups"
+caddy_data_host="$scratch/caddy-data"
+caddy_config_host="$scratch/caddy-config"
 export COMPOSE_PROJECT_NAME="$project"
-export COMPOSE_FILE="compose.yml:compose.test.yml"
 export DOMAIN=localhost APP_ORIGIN=https://localhost:18443 CADDY_EMAIL=test@example.invalid
 export TEST_HTTP_PORT="${TEST_HTTP_PORT:-18080}" TEST_HTTPS_PORT="${TEST_HTTPS_PORT:-18443}"
-export DATA_DIR="$scratch/data" BACKUP_DIR="$scratch/backups" CADDY_DATA_DIR="$scratch/caddy-data" CADDY_CONFIG_DIR="$scratch/caddy-config"
+export DATA_DIR="$compose_scratch/data" BACKUP_DIR="$compose_scratch/backups" CADDY_DATA_DIR="$compose_scratch/caddy-data" CADDY_CONFIG_DIR="$compose_scratch/caddy-config"
 export IMAGE_TAG="$project" IMAGE_VERSION="$(git rev-parse HEAD 2>/dev/null || echo unknown)" BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 password='smoke-only-password-42'
 base="https://localhost:$TEST_HTTPS_PORT"
 
-compose() { docker compose "$@"; }
+compose() { MSYS_NO_PATHCONV=1 docker compose -f compose.yml -f compose.test.yml "$@"; }
 cleanup() {
   status=$?
   if (( status != 0 )); then
@@ -27,12 +34,12 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT HUP INT TERM
-mkdir -p "$DATA_DIR" "$BACKUP_DIR" "$CADDY_DATA_DIR" "$CADDY_CONFIG_DIR"
-chmod 0770 "$DATA_DIR" "$BACKUP_DIR"
-chmod 0770 "$CADDY_DATA_DIR" "$CADDY_CONFIG_DIR"
+mkdir -p "$data_host" "$backup_host" "$caddy_data_host" "$caddy_config_host"
+chmod 0770 "$data_host" "$backup_host"
+chmod 0770 "$caddy_data_host" "$caddy_config_host"
 if command -v chown >/dev/null; then
-  chown 10001:10001 "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || chmod 0777 "$DATA_DIR" "$BACKUP_DIR"
-  chown 1000:1000 "$CADDY_DATA_DIR" "$CADDY_CONFIG_DIR" 2>/dev/null || chmod 0777 "$CADDY_DATA_DIR" "$CADDY_CONFIG_DIR"
+  chown 10001:10001 "$data_host" "$backup_host" 2>/dev/null || chmod 0777 "$data_host" "$backup_host"
+  chown 1000:1000 "$caddy_data_host" "$caddy_config_host" 2>/dev/null || chmod 0777 "$caddy_data_host" "$caddy_config_host"
 fi
 
 compose config --quiet
@@ -82,23 +89,29 @@ curl -kfsS -b "$cookie" "$base/api/sync/pull?cursor=0&limit=100" | grep -q 'smok
 
 backup_path="$(compose run --rm --no-deps backup /app/scripts/backup.sh manual | tail -n 1)"
 backup_name="$(basename "$backup_path")"
-test -f "$BACKUP_DIR/$backup_name"
+test -f "$backup_host/$backup_name"
 compose run --rm --no-deps backup /app/scripts/validate-backup.sh "/backups/$backup_name"
 
 curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' --data-binary @- "$base/api/sync/push" > "$scratch/update.json" <<JSON
 {"operations":[{"operationId":"33333333-3333-4333-8333-333333333333","entityId":"22222222-2222-4222-8222-222222222222","baseVersion":1,"createdAt":"2026-07-13T12:01:00.000Z","entityType":"task","operationType":"update","payload":{"title":"smoke-modified"}}]}
 JSON
 grep -q '"status":"applied"' "$scratch/update.json"
-bash scripts/restore.sh "$BACKUP_DIR/$backup_name"
+MSYS_NO_PATHCONV=1 BACKUP_HOST_DIR="$backup_host" bash scripts/restore.sh "$backup_host/$backup_name"
 curl -kfsS -b "$cookie" "$base/api/sync/pull?cursor=0&limit=100" | grep -q 'smoke-original'
 
 compose up -d --force-recreate api
 for _ in {1..30}; do curl -kfsS "$base/api/health/ready" >/dev/null && break; sleep 2; done
 compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM tasks WHERE title=\"smoke-original\";")" -eq 1'
 
+corrupt_name="kaoyan-20260713T125900000000000Z-manual.sqlite.gz"
+compose run --rm --no-deps backup sh -c "printf 'not-a-gzip-archive' > /backups/$corrupt_name"
+if MSYS_NO_PATHCONV=1 BACKUP_HOST_DIR="$backup_host" bash scripts/restore.sh "$backup_host/$corrupt_name"; then echo 'Corrupt gzip restore unexpectedly succeeded' >&2; exit 1; fi
+curl -kfsS "$base/api/health/ready" >/dev/null
+compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM tasks WHERE title=\"smoke-original\";")" -eq 1'
+
 rollback_name="kaoyan-20260713T130000000000000Z-manual.sqlite.gz"
 compose run --rm --no-deps backup sh -c "sqlite3 /tmp/empty.sqlite 'VACUUM;' && gzip -c /tmp/empty.sqlite > /backups/$rollback_name"
-if bash scripts/restore.sh "$BACKUP_DIR/$rollback_name"; then echo 'Account-less restore unexpectedly succeeded' >&2; exit 1; fi
+if MSYS_NO_PATHCONV=1 BACKUP_HOST_DIR="$backup_host" bash scripts/restore.sh "$backup_host/$rollback_name"; then echo 'Account-less restore unexpectedly succeeded' >&2; exit 1; fi
 curl -kfsS "$base/api/health/ready" >/dev/null
 compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM tasks WHERE title=\"smoke-original\";")" -eq 1'
 

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
-BACKUP_ROOT="$(realpath -e "${BACKUP_DIR:-backups}")"
+BACKUP_ROOT="$(realpath -e "${BACKUP_HOST_DIR:-${BACKUP_DIR:-backups}}")"
 requested="${1:?Usage: ./scripts/restore.sh backups/kaoyan-...sqlite.gz}"
 target="$(realpath -e "$requested")" || { echo "Backup does not exist" >&2; exit 66; }
 case "$target" in "$BACKUP_ROOT"/kaoyan-????????T???????????????Z-*.sqlite.gz) ;; *) echo "Restore only accepts named backups inside backups/" >&2; exit 64 ;; esac
