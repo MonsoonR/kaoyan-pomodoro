@@ -160,13 +160,13 @@ describe('SQLite schema migrations', () => {
       );
 
       INSERT INTO active_timer (
-        id, singleton_key, user_id, daily_task_id, phase, status,
+        id, singleton_key, user_id, daily_task_id, task_title, subject, phase, status,
         planned_seconds, started_at, target_end_at, paused_at,
         accumulated_paused_seconds, version, created_at, updated_at
       ) VALUES (
         '038f556e-5bbb-7850-8117-41a14e88b577', 1,
         '018f556e-5bbb-7850-8117-41a14e88b577',
-        '028f556e-5bbb-7850-8117-41a14e88b577',
+        '028f556e-5bbb-7850-8117-41a14e88b577', '高等数学', '数学',
         'focus', 'running', 3000, ${now}, ${now + 3_000_000}, NULL,
         0, 1, ${now}, ${now}
       );
@@ -174,13 +174,13 @@ describe('SQLite schema migrations', () => {
 
     const secondTimerSql = `
       INSERT INTO active_timer (
-        id, singleton_key, user_id, daily_task_id, phase, status,
+        id, singleton_key, user_id, daily_task_id, task_title, subject, phase, status,
         planned_seconds, started_at, target_end_at, paused_at,
         accumulated_paused_seconds, version, created_at, updated_at
       ) VALUES (
         '048f556e-5bbb-7850-8117-41a14e88b577', 1,
         '018f556e-5bbb-7850-8117-41a14e88b577',
-        '028f556e-5bbb-7850-8117-41a14e88b577',
+        '028f556e-5bbb-7850-8117-41a14e88b577', '高等数学', '数学',
         'focus', 'running', 1500, ${now}, ${now + 1_500_000}, NULL,
         0, 1, ${now}, ${now}
       );
@@ -466,6 +466,69 @@ describe('SQLite schema migrations', () => {
     } finally {
       fileConnection?.close();
       rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('backfills active timer task snapshots while upgrading from 0005', () => {
+    const partialFolder = mkdtempSync(join(tmpdir(), 'migrations-0005-'));
+    const metaFolder = join(partialFolder, 'meta');
+    mkdirSync(metaFolder);
+    for (const migration of [
+      '0000_unknown_red_wolf.sql',
+      '0001_broad_dakota_north.sql',
+      '0002_wakeful_dark_beast.sql',
+      '0003_kind_skreet.sql',
+      '0004_conflict_resolution_result.sql',
+      '0005_legacy_conflict_resolution_results.sql',
+    ])
+      copyFileSync(
+        join(defaultMigrationsFolder, migration),
+        join(partialFolder, migration),
+      );
+    const journal = JSON.parse(
+      readFileSync(join(defaultMigrationsFolder, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: Array<{ idx: number }> };
+    writeFileSync(
+      join(metaFolder, '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, 6) }),
+    );
+
+    const legacy = openDatabase(':memory:');
+    try {
+      migrateDatabase(legacy.db, partialFolder);
+      const now = Date.parse('2026-07-13T10:00:00Z');
+      const userId = '91111111-1111-4111-8111-111111111111';
+      const dailyId = '92222222-2222-4222-8222-222222222222';
+      const timerId = '93333333-3333-4333-8333-333333333333';
+      legacy.sqlite.prepare(`INSERT INTO users(
+        id,singleton_key,username,password_hash,password_changed_at,
+        created_at,updated_at
+      ) VALUES (?,1,'legacy-timer','hash',?,?,?)`).run(userId, now, now, now);
+      legacy.sqlite.prepare(`INSERT INTO daily_tasks(
+        id,user_id,date,title,subject,pomodoro_target,pomodoro_completed,
+        timer_preset,status,sort_order,version,created_at,updated_at
+      ) VALUES (?,?,'2026-07-13','Backfilled title','Physics',2,0,
+        '25-5','active',0,2,?,?)`).run(dailyId, userId, now, now);
+      legacy.sqlite.prepare(`INSERT INTO active_timer(
+        id,singleton_key,user_id,daily_task_id,phase,status,planned_seconds,
+        started_at,target_end_at,paused_at,accumulated_paused_seconds,
+        interruption_reason,version,created_at,updated_at,deleted_at
+      ) VALUES (?,1,?,?,'focus','running',60,?,?,NULL,0,NULL,1,?,?,NULL)`)
+        .run(timerId, userId, dailyId, now, now + 60_000, now, now);
+
+      migrateDatabase(legacy.db);
+      expect(
+        legacy.sqlite
+          .prepare('SELECT task_title,subject FROM active_timer WHERE id=?')
+          .get(timerId),
+      ).toEqual({ task_title: 'Backfilled title', subject: 'Physics' });
+      expect(legacy.sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(legacy.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
+    } finally {
+      legacy.close();
+      rmSync(partialFolder, { force: true, recursive: true });
     }
   });
 

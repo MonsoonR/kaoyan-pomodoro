@@ -8,7 +8,12 @@ export interface ServiceDependencies {
 
 export interface ChangeInput {
   userId: string;
-  entityType: 'task' | 'dailyTask' | 'settings';
+  entityType:
+    | 'task'
+    | 'dailyTask'
+    | 'focusSession'
+    | 'activeTimer'
+    | 'settings';
   entityId: string;
   version: number;
   changeType: 'upsert' | 'delete';

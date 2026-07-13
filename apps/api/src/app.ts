@@ -23,6 +23,7 @@ import { authRoutes } from './routes/auth';
 import { deviceRoutes } from './routes/devices';
 import { studyDataRoutes } from './routes/study-data';
 import { syncRoutes } from './routes/sync';
+import { timerRoutes } from './routes/timer';
 import { conflictRoutes } from './routes/conflicts';
 import {
   ConflictAlreadyResolvedError,
@@ -31,6 +32,7 @@ import {
   InvalidConflictResolutionError,
   StaleVersionError,
 } from './services/errors';
+import { StaleTimerVersionError, TimerError } from './services/timer-errors';
 import { installOriginGuard } from './security/origin-guard';
 
 const BODY_LIMIT_BYTES = 64 * 1024;
@@ -99,6 +101,7 @@ export async function createApp(options: AppOptions) {
   await deviceRoutes(app, services);
   await studyDataRoutes(app, services);
   await syncRoutes(app, services);
+  await timerRoutes(app, services);
   await conflictRoutes(app, services);
 
   app.setErrorHandler((error, _request, reply) => {
@@ -115,6 +118,30 @@ export async function createApp(options: AppOptions) {
         message: error.message,
         currentVersion: error.currentVersion,
       });
+    if (error instanceof StaleTimerVersionError)
+      return reply.code(409).send({
+        code: error.code,
+        message: error.message,
+        currentVersion: error.currentVersion,
+        currentTimer: error.currentTimer,
+        serverTime: error.serverTime,
+      });
+    if (error instanceof TimerError) {
+      const badRequest = new Set([
+        'INVALID_TIMER_STATE',
+        'TIMER_NOT_ELAPSED',
+        'TIMER_ALREADY_ELAPSED',
+        'INVALID_DAILY_TASK_STATE',
+        'SERVER_TIME_MOVED_BACKWARDS',
+      ]);
+      const notFound = new Set(['TIMER_NOT_ACTIVE', 'DAILY_TASK_NOT_AVAILABLE']);
+      const status = badRequest.has(error.code)
+        ? 400
+        : notFound.has(error.code)
+          ? 404
+          : 409;
+      return reply.code(status).send({ code: error.code, message: error.message });
+    }
     if (error instanceof InvalidConflictResolutionError)
       return reply.code(400).send(
         InvalidConflictResolutionErrorSchema.parse({

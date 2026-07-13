@@ -43,6 +43,235 @@ beforeEach(() => {
     )
     .run(settingsId, user, now.getTime(), now.getTime());
 });
+
+describe('server-managed timer synchronization', () => {
+  const timerId = '66666666-6666-4666-8666-666666666666';
+  const prepareDaily = () =>
+    createDailyTaskService(deps()).createTemporary(user, {
+      id: daily,
+      date: '2026-07-13',
+      title: 'Math today',
+      subject: 'Algebra',
+      pomodoroTarget: 1,
+      timerPreset: '25-5',
+      sortOrder: 0,
+    });
+  const timerOp = (
+    operationType:
+      | 'timerStart'
+      | 'timerPause'
+      | 'timerResume'
+      | 'timerComplete'
+      | 'timerExit',
+    baseVersion: number,
+    payload: Record<string, unknown>,
+    entityId = timerId,
+  ) =>
+    op({
+      entityId,
+      entityType: 'activeTimer',
+      operationType,
+      baseVersion,
+      payload,
+    });
+
+  it('syncs start, pause, resume and exit with duplicate and semantic retries', () => {
+    prepareDaily();
+    const p = processor();
+    const started = timerOp('timerStart', 0, {
+      dailyTaskId: daily,
+      dailyTaskVersion: 1,
+      phase: 'focus',
+      plannedSeconds: 60,
+    });
+    expect(p.process(started, user, device)).toMatchObject({
+      status: 'applied',
+      entityVersion: 1,
+    });
+    expect(p.process(started, user, device)).toMatchObject({ status: 'duplicate' });
+    expect(
+      p.process(
+        timerOp(
+          'timerStart',
+          0,
+          {
+            dailyTaskId: daily,
+            dailyTaskVersion: 2,
+            phase: 'focus',
+            plannedSeconds: 60,
+          },
+          '67777777-7777-4777-8777-777777777777',
+        ),
+        user,
+        device,
+      ),
+    ).toMatchObject({ status: 'rejected', errorCode: 'TIMER_ALREADY_ACTIVE' });
+    now = new Date(now.getTime() + 10_000);
+    expect(
+      p.process(timerOp('timerPause', 1, { reason: 'Pause' }), user, device),
+    ).toMatchObject({ status: 'applied', entityVersion: 2 });
+    now = new Date(now.getTime() + 5_500);
+    expect(
+      p.process(timerOp('timerResume', 2, {}), user, device),
+    ).toMatchObject({ status: 'applied', entityVersion: 3 });
+    now = new Date(now.getTime() + 10_000);
+    expect(
+      p.process(timerOp('timerExit', 3, { reason: 'Stop' }), user, device),
+    ).toMatchObject({ status: 'applied', entityVersion: 4 });
+    const before = counts();
+    expect(
+      p.process(timerOp('timerExit', 4, { reason: 'Stop' }), user, device),
+    ).toMatchObject({ status: 'applied', entityVersion: 4 });
+    expect(counts()).toMatchObject({
+      changes: before.changes,
+      tasks: before.tasks,
+      conflicts: before.conflicts,
+    });
+    expect(
+      db.sqlite.prepare('SELECT count(*) n FROM focus_sessions').get(),
+    ).toEqual({ n: 1 });
+    const pulled = pullChanges(db.sqlite, user, 0, 100);
+    expect(
+      pulled.changes.some(
+        (change) =>
+          change.entityType === 'activeTimer' &&
+          change.changeType === 'upsert' &&
+          change.payload?.id === timerId,
+      ),
+    ).toBe(true);
+    expect(
+      pulled.changes.some(
+        (change) =>
+          change.entityType === 'activeTimer' &&
+          change.changeType === 'delete' &&
+          change.payload === null,
+      ),
+    ).toBe(true);
+    expect(
+      pulled.changes.some(
+        (change) =>
+          change.entityType === 'focusSession' &&
+          change.changeType === 'upsert' &&
+          change.payload?.id === timerId,
+      ),
+    ).toBe(true);
+  });
+
+  it('completes once across different operation ids and persists locked receipts', () => {
+    prepareDaily();
+    const p = processor();
+    p.process(
+      timerOp('timerStart', 0, {
+        dailyTaskId: daily,
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 60,
+      }),
+      user,
+      device,
+    );
+    for (const operationType of ['complete', 'restore', 'delete'] as const) {
+      const locked = op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType,
+        baseVersion: 2,
+        payload: {},
+      });
+      expect(p.process(locked, user, device)).toMatchObject({
+        status: 'rejected',
+        errorCode: 'ACTIVE_TIMER_TASK_LOCKED',
+      });
+      expect(
+        db.sqlite
+          .prepare(
+            'SELECT status,error_code FROM sync_operations WHERE operation_id=?',
+          )
+          .get(locked.operationId),
+      ).toEqual({
+        status: 'rejected',
+        error_code: 'ACTIVE_TIMER_TASK_LOCKED',
+      });
+    }
+    now = new Date(now.getTime() + 60_000);
+    expect(
+      p.process(timerOp('timerComplete', 1, {}), user, device),
+    ).toMatchObject({ status: 'applied', entityVersion: 2 });
+    const changeCount = counts().changes;
+    expect(
+      p.process(timerOp('timerComplete', 2, {}), user, device),
+    ).toMatchObject({ status: 'applied', entityVersion: 2 });
+    expect(counts().changes).toBe(changeCount);
+    expect(db.sqlite.prepare('SELECT count(*) n FROM focus_sessions').get()).toEqual({ n: 1 });
+  });
+
+  it('rolls back timer state, task state and changes when receipt insertion fails', () => {
+    prepareDaily();
+    const before = counts();
+    const failing = createSyncProcessor({
+      ...deps(),
+      writeReceipt: () => {
+        throw new Error('receipt failed');
+      },
+    });
+    expect(() =>
+      failing.process(
+        timerOp('timerStart', 0, {
+          dailyTaskId: daily,
+          dailyTaskVersion: 1,
+          phase: 'focus',
+          plannedSeconds: 60,
+        }),
+        user,
+        device,
+      ),
+    ).toThrow('receipt failed');
+    expect(counts()).toEqual(before);
+    expect(
+      db.sqlite.prepare('SELECT status,version FROM daily_tasks WHERE id=?').get(daily),
+    ).toEqual({ status: 'pending', version: 1 });
+    expect(db.sqlite.prepare('SELECT count(*) n FROM active_timer').get()).toEqual({ n: 0 });
+  });
+
+  it('rolls back terminal session, task, timer and changes when its receipt fails', () => {
+    prepareDaily();
+    processor().process(
+      timerOp('timerStart', 0, {
+        dailyTaskId: daily,
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 60,
+      }),
+      user,
+      device,
+    );
+    now = new Date(now.getTime() + 60_000);
+    const before = counts();
+    const failing = createSyncProcessor({
+      ...deps(),
+      writeReceipt: () => {
+        throw new Error('terminal receipt failed');
+      },
+    });
+    expect(() =>
+      failing.process(timerOp('timerComplete', 1, {}), user, device),
+    ).toThrow('terminal receipt failed');
+    expect(counts()).toEqual(before);
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT status,pomodoro_completed,version FROM daily_tasks WHERE id=?',
+        )
+        .get(daily),
+    ).toEqual({ status: 'active', pomodoro_completed: 0, version: 2 });
+    expect(
+      db.sqlite
+        .prepare('SELECT version,deleted_at FROM active_timer WHERE id=?')
+        .get(timerId),
+    ).toEqual({ version: 1, deleted_at: null });
+    expect(db.sqlite.prepare('SELECT count(*) n FROM focus_sessions').get()).toEqual({ n: 0 });
+  });
+});
 afterEach(() => {
   db.close();
   rmSync(dir, { recursive: true, force: true });
@@ -157,15 +386,50 @@ describe('idempotent processing', () => {
       conflicts: 0,
     });
   });
-  it('rejects timer and focus operations stably', () => {
+  it('applies timer operations and rejects client-created focus sessions', () => {
+    createDailyTaskService(deps()).createTemporary(user, {
+      id: daily,
+      date: '2026-07-13',
+      title: 'Math today',
+      subject: 'Algebra',
+      pomodoroTarget: 4,
+      timerPreset: '50-10',
+      sortOrder: 0,
+    });
     const timer = op({
+      entityId: '66666666-6666-4666-8666-666666666666',
       entityType: 'activeTimer',
       operationType: 'timerStart',
-      payload: { dailyTaskId: daily, phase: 'focus', plannedSeconds: 60 },
+      payload: {
+        dailyTaskId: daily,
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 60,
+      },
     });
     expect(processor().process(timer, user, device)).toMatchObject({
+      status: 'applied',
+      entityVersion: 1,
+    });
+    const focus = op({
+      entityType: 'focusSession',
+      operationType: 'create',
+      payload: {
+        dailyTaskId: daily,
+        taskTitle: 'Forged',
+        subject: 'Algebra',
+        phase: 'focus',
+        plannedSeconds: 60,
+        effectiveSeconds: 60,
+        startedAt: now.toISOString(),
+        endedAt: now.toISOString(),
+        result: 'completed',
+        interruptionReason: null,
+      },
+    });
+    expect(processor().process(focus, user, device)).toMatchObject({
       status: 'rejected',
-      errorCode: 'OPERATION_NOT_SUPPORTED',
+      errorCode: 'SERVER_MANAGED_ENTITY',
     });
   });
   it('keeps earlier commits retry-safe after a later internal failure', () => {

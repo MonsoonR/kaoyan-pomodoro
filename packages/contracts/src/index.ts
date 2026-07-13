@@ -113,8 +113,9 @@ const FocusSessionCreatePayloadSchema = z
 const TimerStartPayloadSchema = z
   .object({
     dailyTaskId: IdSchema,
+    dailyTaskVersion: ExpectedVersionSchema,
     phase: PhaseSchema,
-    plannedSeconds: z.int().positive(),
+    plannedSeconds: z.int().min(1).max(10_800),
   })
   .strict();
 
@@ -381,23 +382,90 @@ export const SyncChangeSchema = z.discriminatedUnion('changeType', [
 
 const ActiveTimerBaseSchema = EntityVersionSchema.extend({
   dailyTaskId: IdSchema,
-  phase: z.enum(['focus', 'short_break', 'long_break']),
-  plannedSeconds: z.int().positive(),
+  taskTitle: z.string().min(1).max(200),
+  subject: z.string().min(1).max(50),
+  phase: PhaseSchema,
+  plannedSeconds: z.int().min(1).max(10_800),
   startedAt: TimestampSchema,
   targetEndAt: TimestampSchema,
   accumulatedPausedSeconds: z.int().nonnegative(),
+  interruptionReason: z.string().min(1).max(500).nullable(),
 });
 
 export const ActiveTimerSchema = z.discriminatedUnion('status', [
   ActiveTimerBaseSchema.extend({
     status: z.literal('running'),
     pausedAt: z.null(),
-  }),
+  }).strict(),
   ActiveTimerBaseSchema.extend({
     status: z.literal('paused'),
     pausedAt: TimestampSchema,
-  }),
+  }).strict(),
 ]);
+
+export const FocusSessionSchema = z
+  .object({
+    id: IdSchema,
+    dailyTaskId: IdSchema.nullable(),
+    taskTitle: z.string().min(1).max(200),
+    subject: z.string().min(1).max(50),
+    phase: PhaseSchema,
+    plannedSeconds: z.int().min(1).max(10_800),
+    effectiveSeconds: z.int().nonnegative().max(10_800),
+    startedAt: TimestampSchema,
+    endedAt: TimestampSchema,
+    result: z.enum(['completed', 'interrupted', 'abandoned']),
+    interruptionReason: z.string().min(1).max(500).nullable(),
+    version: z.literal(1),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+    deletedAt: z.null(),
+  })
+  .strict();
+
+export const TimerIdParamsSchema = z.object({ timerId: IdSchema }).strict();
+export const StartTimerRequestSchema = z
+  .object({
+    id: IdSchema,
+    dailyTaskId: IdSchema,
+    dailyTaskVersion: ExpectedVersionSchema,
+    phase: PhaseSchema,
+    plannedSeconds: z.int().min(1).max(10_800),
+  })
+  .strict();
+export const PauseTimerRequestSchema = z
+  .object({
+    expectedVersion: ExpectedVersionSchema,
+    reason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+export const ResumeTimerRequestSchema = VersionedMutationRequestSchema;
+export const CompleteTimerRequestSchema = VersionedMutationRequestSchema;
+export const ExitTimerRequestSchema = PauseTimerRequestSchema;
+
+export const StartTimerResponseSchema = z
+  .object({
+    outcome: z.enum(['started', 'existing']),
+    timer: ActiveTimerSchema,
+    serverTime: TimestampSchema,
+  })
+  .strict();
+export const TimerFinalizationResponseSchema = z
+  .object({
+    outcome: z.enum(['finalized', 'alreadyFinalized']),
+    focusSession: FocusSessionSchema,
+    serverTime: TimestampSchema,
+  })
+  .strict();
+export const StaleTimerVersionErrorSchema = z
+  .object({
+    code: z.literal('STALE_TIMER_VERSION'),
+    message: z.literal('Timer version is stale'),
+    currentVersion: z.int().positive(),
+    currentTimer: ActiveTimerSchema,
+    serverTime: TimestampSchema,
+  })
+  .strict();
 
 export const ApiErrorSchema = z.object({
   code: z.string().min(1),
@@ -591,7 +659,7 @@ export const PullChangesResponseSchema = z.object({
 export const TimerStateResponseSchema = z.object({
   timer: ActiveTimerSchema.nullable(),
   serverTime: TimestampSchema,
-});
+}).strict();
 
 export type EntityVersion = z.infer<typeof EntityVersionSchema>;
 export type CurrentSession = z.infer<typeof CurrentSessionSchema>;
@@ -605,6 +673,16 @@ export type SyncOperationType = z.infer<typeof SyncOperationTypeSchema>;
 export type SyncOperation = z.infer<typeof SyncOperationSchema>;
 export type SyncChange = z.infer<typeof SyncChangeSchema>;
 export type ActiveTimer = z.infer<typeof ActiveTimerSchema>;
+export type FocusSession = z.infer<typeof FocusSessionSchema>;
+export type StartTimerRequest = z.infer<typeof StartTimerRequestSchema>;
+export type PauseTimerRequest = z.infer<typeof PauseTimerRequestSchema>;
+export type ResumeTimerRequest = z.infer<typeof ResumeTimerRequestSchema>;
+export type CompleteTimerRequest = z.infer<typeof CompleteTimerRequestSchema>;
+export type ExitTimerRequest = z.infer<typeof ExitTimerRequestSchema>;
+export type StartTimerResponse = z.infer<typeof StartTimerResponseSchema>;
+export type TimerFinalizationResponse = z.infer<
+  typeof TimerFinalizationResponseSchema
+>;
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 export type PushOperationsRequest = z.infer<typeof PushOperationsRequestSchema>;
 export type PushOperationsResponse = z.infer<

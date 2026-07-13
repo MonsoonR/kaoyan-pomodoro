@@ -10,6 +10,7 @@ import {
   type ServiceDependencies,
 } from './common';
 import { EntityNotFoundError, StaleVersionError } from './errors';
+import { TimerError } from './timer-errors';
 
 interface Row {
   id: string;
@@ -64,6 +65,14 @@ export function createDailyTaskService(deps: ServiceDependencies) {
     const r = get(u, id);
     if (!r || r.deleted_at !== null) throw new EntityNotFoundError();
     throw new StaleVersionError(r.version);
+  };
+  const assertUnlocked = (u: string, id: string) => {
+    const locked = deps.sqlite
+      .prepare(
+        `SELECT 1 FROM active_timer WHERE user_id=? AND daily_task_id=? AND deleted_at IS NULL`,
+      )
+      .get(u, id);
+    if (locked) throw new TimerError('ACTIVE_TIMER_TASK_LOCKED');
   };
   const finish = (u: string, id: string, n: number, t: 'upsert' | 'delete') => {
     const r = get(u, id);
@@ -226,6 +235,7 @@ export function createDailyTaskService(deps: ServiceDependencies) {
     },
     setCompleted(u: string, id: string, v: number, complete: boolean) {
       return deps.sqlite.transaction(() => {
+        assertUnlocked(u, id);
         const n = deps.now().getTime();
         const result = deps.sqlite
           .prepare(
@@ -251,6 +261,7 @@ export function createDailyTaskService(deps: ServiceDependencies) {
     },
     delete(u: string, id: string, v: number) {
       return deps.sqlite.transaction(() => {
+        assertUnlocked(u, id);
         const n = deps.now().getTime();
         const result = deps.sqlite
           .prepare(

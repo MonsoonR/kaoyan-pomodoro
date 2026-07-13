@@ -9,6 +9,11 @@ import { createDailyTaskService } from '../services/daily-tasks';
 import { StaleVersionError } from '../services/errors';
 import { createSettingsService } from '../services/settings';
 import { createTaskService } from '../services/tasks';
+import { createTimerService } from '../services/timer';
+import {
+  StaleTimerVersionError,
+  TimerError,
+} from '../services/timer-errors';
 
 interface ProcessorDependencies {
   sqlite: Database.Database;
@@ -72,6 +77,7 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
   const tasks = createTaskService(deps);
   const daily = createDailyTaskService(deps);
   const settings = createSettingsService(deps);
+  const timer = createTimerService(deps);
   const writeReceipt = deps.writeReceipt ?? defaultWriteReceipt;
   const generateId = deps.generateId ?? randomUUID;
 
@@ -137,16 +143,78 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
     userId: string,
     deviceId: string,
   ) => {
-    if (
-      operation.entityType === 'focusSession' ||
-      operation.entityType === 'activeTimer'
-    )
+    if (operation.entityType === 'focusSession')
       return rejected(
         operation,
         null,
-        'OPERATION_NOT_SUPPORTED',
-        'Operation is not supported yet',
+        'SERVER_MANAGED_ENTITY',
+        'Focus sessions are managed by the server',
       );
+
+    if (operation.entityType === 'activeTimer') {
+      try {
+        if (operation.operationType === 'timerStart') {
+          const result = timer.startTimer(userId, {
+            id: operation.entityId,
+            dailyTaskId: operation.payload.dailyTaskId,
+            dailyTaskVersion: operation.payload.dailyTaskVersion,
+            phase: operation.payload.phase,
+            plannedSeconds: operation.payload.plannedSeconds,
+          });
+          if (result.outcome === 'existing' && result.timer.id !== operation.entityId)
+            return rejected(
+              operation,
+              result.timer.version,
+              'TIMER_ALREADY_ACTIVE',
+              'Another timer is already active',
+            );
+          return applied(operation, result.timer.version);
+        }
+        if (operation.operationType === 'timerPause') {
+          const result = timer.pauseTimer(userId, operation.entityId, {
+            expectedVersion: operation.baseVersion,
+            reason: operation.payload.reason,
+          });
+          return applied(operation, result.timer.version);
+        }
+        if (operation.operationType === 'timerResume') {
+          const result = timer.resumeTimer(userId, operation.entityId, {
+            expectedVersion: operation.baseVersion,
+          });
+          return applied(operation, result.timer.version);
+        }
+        if (operation.operationType === 'timerComplete')
+          timer.completeTimer(userId, operation.entityId, {
+            expectedVersion: operation.baseVersion,
+          });
+        else
+          timer.exitTimer(userId, operation.entityId, {
+            expectedVersion: operation.baseVersion,
+            reason: operation.payload.reason,
+          });
+        const version = timer.getTimerVersion(userId, operation.entityId);
+        if (version === null) throw new TimerError('TIMER_NOT_ACTIVE');
+        return applied(operation, version);
+      } catch (error) {
+        if (error instanceof StaleTimerVersionError)
+          return rejected(
+            operation,
+            error.currentVersion,
+            error.code,
+            error.message,
+          );
+        if (error instanceof TimerError)
+          return rejected(operation, null, error.code, error.message);
+        if (error instanceof StaleVersionError)
+          return rejected(
+            operation,
+            error.currentVersion,
+            error.code,
+            error.message,
+          );
+        throw error;
+      }
+    }
 
     if (operation.entityType === 'task') {
       const current = tasks.getAny(userId, operation.entityId);
@@ -422,14 +490,21 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
       userId: string,
       deviceId: string,
     ): OperationReceipt {
-      return deps.sqlite.transaction(() => {
+      const transaction = deps.sqlite.transaction(() => {
         const existing = deps.sqlite
           .prepare(
             `SELECT status, entity_version, conflict_id, error_code, error_message FROM sync_operations WHERE operation_id = ? AND user_id = ?`,
           )
           .get(operation.operationId, userId) as StoredReceipt | undefined;
         if (existing) return stored(operation.operationId, existing);
-        const result = dispatch(operation, userId, deviceId);
+        let result;
+        try {
+          result = dispatch(operation, userId, deviceId);
+        } catch (error) {
+          if (error instanceof TimerError)
+            result = rejected(operation, null, error.code, error.message);
+          else throw error;
+        }
         writeReceipt(deps.sqlite, {
           ...result,
           userId,
@@ -444,7 +519,11 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
           errorCode: result.errorCode,
           errorMessage: result.errorMessage,
         });
-      })();
+      });
+      return operation.entityType === 'activeTimer' &&
+        operation.operationType === 'timerStart'
+        ? transaction.immediate()
+        : transaction();
     },
   };
 }

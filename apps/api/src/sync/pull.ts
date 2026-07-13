@@ -1,5 +1,7 @@
 import {
   DailyTaskSchema,
+  ActiveTimerSchema,
+  FocusSessionSchema,
   PullChangesResponseSchema,
   SettingsSchema,
   TaskSchema,
@@ -9,7 +11,12 @@ import type Database from 'better-sqlite3';
 
 interface ChangeRow {
   cursor: number;
-  entity_type: 'task' | 'dailyTask' | 'settings';
+  entity_type:
+    | 'task'
+    | 'dailyTask'
+    | 'focusSession'
+    | 'activeTimer'
+    | 'settings';
   entity_id: string;
   version: number;
   change_type: 'upsert' | 'delete';
@@ -41,12 +48,13 @@ export function pullChanges(
     let payload: Record<string, unknown> | null = null;
     if (row.change_type === 'upsert') {
       const raw: unknown = JSON.parse(row.payload ?? 'null');
-      const schema =
-        row.entity_type === 'task'
-          ? TaskSchema
-          : row.entity_type === 'dailyTask'
-            ? DailyTaskSchema
-            : SettingsSchema;
+      const schema = {
+        task: TaskSchema,
+        dailyTask: DailyTaskSchema,
+        focusSession: FocusSessionSchema,
+        activeTimer: ActiveTimerSchema,
+        settings: SettingsSchema,
+      }[row.entity_type];
       payload = schema.parse(raw);
     }
     return {

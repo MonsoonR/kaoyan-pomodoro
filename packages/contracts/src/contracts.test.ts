@@ -9,6 +9,10 @@ import {
   DeviceListResponseSchema,
   SuccessResponseSchema,
   ActiveTimerSchema,
+  FocusSessionSchema,
+  PauseTimerRequestSchema,
+  StartTimerRequestSchema,
+  TimerFinalizationResponseSchema,
   EntityVersionSchema,
   OperationReceiptSchema,
   ConflictSchema,
@@ -234,6 +238,8 @@ describe('synchronization payload schemas', () => {
         updatedAt: timestamp,
         deletedAt: null,
         dailyTaskId: '029f556e-5bbb-7850-8117-41a14e88b577',
+        taskTitle: '线性代数',
+        subject: '数学',
         phase: 'focus',
         status: 'paused',
         plannedSeconds: 1500,
@@ -241,6 +247,7 @@ describe('synchronization payload schemas', () => {
         targetEndAt: '2026-07-12T08:25:00.000Z',
         pausedAt: '2026-07-12T08:10:00.000Z',
         accumulatedPausedSeconds: 0,
+        interruptionReason: '喝水',
       }).status,
     ).toBe('paused');
   });
@@ -265,6 +272,8 @@ describe('synchronization payload schemas', () => {
         updatedAt: timestamp,
         deletedAt: null,
         dailyTaskId: '029f556e-5bbb-7850-8117-41a14e88b577',
+        taskTitle: '线性代数',
+        subject: '数学',
         phase: 'focus',
         status: 'running',
         plannedSeconds: 1500,
@@ -272,6 +281,7 @@ describe('synchronization payload schemas', () => {
         targetEndAt: '2026-07-12T08:25:00.000Z',
         pausedAt: '2026-07-12T08:10:00.000Z',
         accumulatedPausedSeconds: 0,
+        interruptionReason: null,
       }),
     ).toThrow();
 
@@ -283,6 +293,53 @@ describe('synchronization payload schemas', () => {
         conflictId: entityId,
       }),
     ).toThrow();
+  });
+
+  it('strictly validates Task 6 timer requests and finalized sessions', () => {
+    expect(
+      StartTimerRequestSchema.parse({
+        id: entityId,
+        dailyTaskId: '029f556e-5bbb-7850-8117-41a14e88b577',
+        dailyTaskVersion: 3,
+        phase: 'focus',
+        plannedSeconds: 10_800,
+      }).dailyTaskVersion,
+    ).toBe(3);
+    expect(PauseTimerRequestSchema.parse({ expectedVersion: 1, reason: '  喝水  ' }).reason).toBe('喝水');
+    expect(() =>
+      StartTimerRequestSchema.parse({
+        id: entityId,
+        dailyTaskId: entityId,
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 10_801,
+      }),
+    ).toThrow();
+    const session = FocusSessionSchema.parse({
+      id: entityId,
+      dailyTaskId: '029f556e-5bbb-7850-8117-41a14e88b577',
+      taskTitle: '线性代数',
+      subject: '数学',
+      phase: 'focus',
+      plannedSeconds: 60,
+      effectiveSeconds: 60,
+      startedAt: timestamp,
+      endedAt: timestamp,
+      result: 'completed',
+      interruptionReason: null,
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null,
+    });
+    expect(
+      TimerFinalizationResponseSchema.parse({
+        outcome: 'finalized',
+        focusSession: session,
+        serverTime: timestamp,
+      }).focusSession.id,
+    ).toBe(entityId);
+    expect(() => FocusSessionSchema.parse({ ...session, version: 2 })).toThrow();
   });
 
   it('strictly validates Task 5 receipts and conflicts', () => {

@@ -43,6 +43,13 @@
       "when": 1783914009223,
       "tag": "0005_legacy_conflict_resolution_results",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783915585030,
+      "tag": "0006_far_slipstream",
+      "breakpoints": true
     }
   ]
 }

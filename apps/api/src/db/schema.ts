@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import type { ResolvedConflictResult } from '@kaoyan/contracts';
 import {
   check,
   index,
@@ -241,6 +242,8 @@ export const activeTimer = sqliteTable(
     dailyTaskId: text('daily_task_id')
       .notNull()
       .references(() => dailyTasks.id, { onDelete: 'restrict' }),
+    taskTitle: text('task_title').notNull(),
+    subject: text('subject').notNull(),
     phase: text('phase').notNull(),
     status: text('status').notNull(),
     plannedSeconds: integer('planned_seconds').notNull(),
@@ -282,6 +285,16 @@ export const activeTimer = sqliteTable(
     ),
     check('active_timer_version_check', sql`${table.version} > 0`),
     check(
+      'active_timer_target_end_check',
+      sql`${table.targetEndAt} >= ${table.startedAt}`,
+    ),
+    check(
+      'active_timer_reason_check',
+      sql`${table.interruptionReason} IS NULL OR length(${table.interruptionReason}) BETWEEN 1 AND 500`,
+    ),
+    check('active_timer_title_check', sql`length(trim(${table.taskTitle})) > 0`),
+    check('active_timer_subject_check', sql`length(trim(${table.subject})) > 0`),
+    check(
       'active_timer_pause_check',
       sql`(
     (${table.status} = 'running' AND ${table.pausedAt} IS NULL)
@@ -315,10 +328,9 @@ export const conflicts = sqliteTable(
       .notNull(),
     status: text('status').notNull().default('open'),
     resolution: text('resolution'),
-    resolutionResult: text('resolution_result', { mode: 'json' }).$type<{
-      resolutionRequest: JsonObject;
-      affectedVersions: Record<string, number>;
-    }>(),
+    resolutionResult: text('resolution_result', { mode: 'json' }).$type<
+      ResolvedConflictResult
+    >(),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(nowInMilliseconds),
