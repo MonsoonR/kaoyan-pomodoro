@@ -4,6 +4,6 @@ export default defineConfig({
   test: {
     environment: 'node',
     setupFiles: ['./src/test/indexeddb.ts'],
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

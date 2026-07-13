@@ -1,10 +1,17 @@
 import {
+  ApiErrorSchema,
   ConflictListResponseSchema,
   ConflictSchema,
   CurrentSessionSchema,
+  DeviceListResponseSchema,
+  LoginResponseSchema,
   PullChangesResponseSchema,
   PushOperationsResponseSchema,
+  ResolveConflictRequestSchema,
+  ResolveConflictResponseSchema,
+  SuccessResponseSchema,
   TimerStateResponseSchema,
+  type ResolveConflictRequest,
   type SyncOperation,
 } from '@kaoyan/contracts';
 import {
@@ -15,8 +22,9 @@ import {
   ProtocolError,
   RateLimitedError,
   ServerError,
+  SyncClientError,
 } from './errors';
-import type { SyncApiClient } from './types';
+import type { AccountApiClient } from './types';
 
 interface Parser<T> { parse(value: unknown): T }
 
@@ -27,7 +35,7 @@ export interface ApiClientDependencies {
 
 export function createApiClient(
   dependencies: ApiClientDependencies = {},
-): SyncApiClient {
+): AccountApiClient {
   const fetchImplementation = dependencies.fetch ?? fetch;
   const now = dependencies.now ?? Date.now;
   const signalInit = (signal?: AbortSignal): Pick<RequestInit, 'signal'> =>
@@ -37,6 +45,7 @@ export function createApiClient(
     path: string,
     schema: Parser<T>,
     init: RequestInit,
+    preserveAuthenticationError = false,
   ): Promise<T> {
     let response: Response;
     try {
@@ -48,11 +57,23 @@ export function createApiClient(
       throw new NetworkError();
     }
     if (!response.ok) {
-      if (response.status === 401) throw new AuthRequiredError();
+      let apiError: { code: string; message: string } | null = null;
+      try {
+        apiError = ApiErrorSchema.parse(await response.clone().json());
+      } catch {
+        // Error pages and malformed payloads are never surfaced verbatim.
+      }
+      if (response.status === 401) {
+        if (preserveAuthenticationError && apiError)
+          throw new SyncClientError(apiError.code, apiError.message);
+        throw new AuthRequiredError();
+      }
       if (response.status === 403) throw new ForbiddenError();
       if (response.status === 413) throw new PayloadTooLargeError();
-      if (response.status === 429) throw new RateLimitedError();
-      if (response.status >= 500) throw new ServerError();
+      if (response.status === 429)
+        throw new RateLimitedError(apiError?.message);
+      if (response.status >= 500) throw new ServerError(apiError?.message);
+      if (apiError) throw new SyncClientError(apiError.code, apiError.message);
       throw new ProtocolError(`Unexpected HTTP status ${response.status}`);
     }
     let value: unknown;
@@ -69,10 +90,77 @@ export function createApiClient(
   }
 
   return {
+    login: (username, password, signal) =>
+      request('/api/auth/login', LoginResponseSchema, {
+        method: 'POST',
+        ...signalInit(signal),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      }, true),
     getCurrentSession: (signal) =>
       request('/api/auth/me', CurrentSessionSchema, {
         method: 'GET', ...signalInit(signal),
       }),
+    logout: (signal) =>
+      request('/api/auth/logout', SuccessResponseSchema, {
+        method: 'POST', ...signalInit(signal),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    changePassword: (
+      currentPassword,
+      newPassword,
+      confirmPassword,
+      signal,
+    ) => request('/api/auth/change-password', SuccessResponseSchema, {
+      method: 'POST',
+      ...signalInit(signal),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+    }, true),
+    listDevices: async (signal) =>
+      (await request('/api/devices', DeviceListResponseSchema, {
+        method: 'GET', ...signalInit(signal),
+      })).devices,
+    renameDevice: (deviceId, name, signal) =>
+      request(
+        `/api/devices/${encodeURIComponent(deviceId)}`,
+        SuccessResponseSchema,
+        {
+          method: 'PATCH',
+          ...signalInit(signal),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        },
+      ),
+    revokeDevice: (deviceId, signal) =>
+      request(
+        `/api/devices/${encodeURIComponent(deviceId)}`,
+        SuccessResponseSchema,
+        {
+          method: 'DELETE',
+          ...signalInit(signal),
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    logoutOtherDevices: (signal) =>
+      request('/api/devices/logout-others', SuccessResponseSchema, {
+        method: 'POST', ...signalInit(signal),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    resolveConflict: (
+      conflictId,
+      resolution: ResolveConflictRequest,
+      signal,
+    ) => request(
+      `/api/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+      ResolveConflictResponseSchema,
+      {
+        method: 'POST',
+        ...signalInit(signal),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ResolveConflictRequestSchema.parse(resolution)),
+      },
+    ),
     pushOperations: (operations: readonly SyncOperation[], signal) =>
       request('/api/sync/push', PushOperationsResponseSchema, {
         method: 'POST',

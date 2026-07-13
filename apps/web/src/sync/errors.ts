@@ -15,13 +15,17 @@ export class ForbiddenError extends SyncClientError {
   constructor() { super('FORBIDDEN', 'The request is not permitted'); }
 }
 export class RateLimitedError extends SyncClientError {
-  constructor() { super('RATE_LIMITED', 'Synchronization is temporarily rate limited'); }
+  constructor(message = 'Synchronization is temporarily rate limited') {
+    super('RATE_LIMITED', message);
+  }
 }
 export class PayloadTooLargeError extends SyncClientError {
   constructor() { super('PAYLOAD_TOO_LARGE', 'The synchronization batch is too large'); }
 }
 export class ServerError extends SyncClientError {
-  constructor() { super('SERVER_ERROR', 'The synchronization service is unavailable'); }
+  constructor(message = 'The synchronization service is unavailable') {
+    super('SERVER_ERROR', message);
+  }
 }
 export class NetworkError extends SyncClientError {
   constructor() { super('NETWORK_ERROR', 'The network request failed'); }

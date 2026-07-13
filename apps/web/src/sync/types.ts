@@ -1,8 +1,10 @@
 import type {
   Conflict,
   CurrentSession,
+  Device,
   PullChangesResponse,
   PushOperationsResponse,
+  ResolveConflictRequest,
   SyncOperation,
   TimerStateResponse,
 } from '@kaoyan/contracts';
@@ -27,6 +29,37 @@ export interface SyncApiClient {
   listConflicts(signal?: AbortSignal): Promise<readonly Conflict[]>;
   getConflict(conflictId: string, signal?: AbortSignal): Promise<Conflict>;
   getTimer(signal?: AbortSignal): Promise<TimedTimerResponse>;
+}
+
+export interface AccountApiClient extends SyncApiClient {
+  login(
+    username: string,
+    password: string,
+    signal?: AbortSignal,
+  ): Promise<CurrentSession>;
+  logout(signal?: AbortSignal): Promise<{ ok: true }>;
+  changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+    signal?: AbortSignal,
+  ): Promise<{ ok: true }>;
+  listDevices(signal?: AbortSignal): Promise<readonly Device[]>;
+  renameDevice(
+    deviceId: string,
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<{ ok: true }>;
+  revokeDevice(deviceId: string, signal?: AbortSignal): Promise<{ ok: true }>;
+  logoutOtherDevices(signal?: AbortSignal): Promise<{ ok: true }>;
+  resolveConflict(
+    conflictId: string,
+    request: ResolveConflictRequest,
+    signal?: AbortSignal,
+  ): Promise<{
+    conflict: Conflict;
+    affectedVersions: Record<string, number>;
+  }>;
 }
 
 export interface SyncLock {

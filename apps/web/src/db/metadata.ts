@@ -13,5 +13,9 @@ export function createMetadata(userId: string): MetadataRow {
     clockMeasuredAt: null,
     clockUncertaintyMs: null,
     pendingCount: 0,
+    username: null,
+    deviceId: null,
+    deviceName: null,
+    sessionExpiresAt: null,
   };
 }

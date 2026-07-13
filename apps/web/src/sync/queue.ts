@@ -241,9 +241,9 @@ export class OfflineOperationQueue {
 
   async addToToday(
     entityId: string,
-    payload: Extract<SyncOperation, {
+    payload: Omit<Extract<SyncOperation, {
       entityType: 'dailyTask'; operationType: 'addToToday';
-    }>['payload'],
+    }>['payload'], 'sourceTaskVersion'>,
   ): Promise<OperationRow> {
     const source = await this.database.replicas.get(
       replicaKey(this.userId, 'task', payload.sourceTaskId),
@@ -269,9 +269,13 @@ export class OfflineOperationQueue {
       updatedAt: now,
       deletedAt: null,
     };
+    const sourceTaskVersion = await this.baseVersion(
+      'task',
+      payload.sourceTaskId,
+    );
     return this.enqueueOperation({
       entityType: 'dailyTask', operationType: 'addToToday', entityId,
-      baseVersion: 0, payload,
+      baseVersion: 0, payload: { ...payload, sourceTaskVersion },
     }, seed);
   }
 

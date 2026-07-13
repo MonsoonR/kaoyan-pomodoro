@@ -87,6 +87,10 @@ export interface MetadataRow {
   clockMeasuredAt: string | null;
   clockUncertaintyMs: number | null;
   pendingCount: number;
+  username: string | null;
+  deviceId: string | null;
+  deviceName: string | null;
+  sessionExpiresAt: string | null;
 }
 
 export interface ConflictRow {

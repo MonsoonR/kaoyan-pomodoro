@@ -265,4 +265,25 @@ describe('offline operation queue', () => {
     const archive = await queue.archiveTask(TASK_ID);
     expect(archive.operation.baseVersion).toBe(2);
   });
+
+  it('derives addToToday sourceTaskVersion from persisted predicted server state', async () => {
+    const name = database.name;
+    await queue.createTask(TASK_ID, createPayload);
+    await queue.updateTask(TASK_ID, { title: 'Limits' });
+    database.close();
+    database = createSyncDatabase(name);
+    await database.open();
+    queue = new OfflineOperationQueue(database, USER_A);
+
+    const added = await queue.addToToday(DAILY_ID, {
+      sourceTaskId: TASK_ID,
+      date: '2026-07-13',
+      sortOrder: 0,
+    });
+
+    expect(added.operation).toMatchObject({
+      operationType: 'addToToday',
+      payload: { sourceTaskId: TASK_ID, sourceTaskVersion: 2 },
+    });
+  });
 });

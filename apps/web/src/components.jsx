@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -13,14 +13,19 @@ import { PRESETS, SUBJECTS } from './model.js';
 export function Modal({ open, title, children, onClose, size = 'medium', dismissible = true }) {
   const titleId = useId();
   const ref = useRef(null);
+  const returnFocusRef = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
+    returnFocusRef.current = document.activeElement;
     const handler = (event) => {
       if (dismissible && event.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', handler);
     queueMicrotask(() => ref.current?.focus());
-    return () => document.removeEventListener('keydown', handler);
+    return () => {
+      document.removeEventListener('keydown', handler);
+      queueMicrotask(() => returnFocusRef.current?.focus?.());
+    };
   }, [open, dismissible, onClose]);
   if (!open) return null;
   return (
@@ -56,10 +61,10 @@ export function TaskForm({ kind, initial, defaultPreset, onCancel, onSave }) {
   const [target, setTarget] = useState(initial?.pomodoroTarget ?? initial?.defaultPomodoroTarget ?? 1);
   const [preset, setPreset] = useState(initial?.timerPreset ?? initial?.defaultTimerPreset ?? defaultPreset);
   const [error, setError] = useState('');
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault();
     try {
-      onSave({ title, subject, target: Number(target), preset });
+      await onSave({ title, subject, target: Number(target), preset });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '保存失败');
     }
@@ -78,7 +83,9 @@ export function TaskForm({ kind, initial, defaultPreset, onCancel, onSave }) {
   );
 }
 
-export function TaskRow({ task, compact = false, onStart, onToggle, onEdit, onDelete, onMove }) {
+// Default callback parameters document the callable prop shape for checked JSX.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function TaskRow({ task, compact = false, onStart, onToggle, onEdit = (_task) => {}, onDelete = (_task) => {}, onMove = (_task, _direction) => {} }) {
   const completed = task.status === 'completed';
   const awaiting = task.status === 'awaiting_confirmation';
   return (
