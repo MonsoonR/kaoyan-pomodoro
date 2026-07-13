@@ -9,11 +9,14 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/model.test.js",
+    "test:model": "node --test tests/model.test.js",
+    "test:sync": "vitest run",
+    "test": "pnpm test:model && pnpm test:sync",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@kaoyan/contracts": "workspace:*",
+    "dexie": "^4.4.4",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -22,7 +25,9 @@
     "@playwright/test": "^1.49.1",
     "@types/node": "^22.10.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "vitest": "^3.2.7"
   }
 }

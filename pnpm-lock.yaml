@@ -72,6 +72,9 @@ importers:
       '@kaoyan/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      dexie:
+        specifier: ^4.4.4
+        version: 4.4.4
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.7)
@@ -91,12 +94,18 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^4.3.4
         version: 4.7.0(vite@6.4.3(@types/node@22.20.1)(tsx@4.23.0))
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
       vite:
         specifier: ^6.0.5
         version: 6.4.3(@types/node@22.20.1)(tsx@4.23.0)
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.0)
 
   packages/contracts:
     dependencies:
@@ -1213,6 +1222,9 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
+  dexie@4.4.4:
+    resolution: {integrity: sha512-jIwsYI8Os2hgnqc6O49YwFDKGc5v5QjGx0wPVp543ip1F53VFAKMLthV2pQosQcVTv3eAskTWYspOx195PM0FQ==}
+
   drizzle-kit@0.31.10:
     resolution: {integrity: sha512-7OZcmQUrdGI+DUNNsKBn1aW8qSoKuTH7d0mYgSP8bAzdFzKoovxEFnoGQp2dVs82EOJeYycqRtciopszwUf8bw==}
     hasBin: true
@@ -1397,6 +1409,10 @@ packages:
   expect-type@1.4.0:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
+
+  fake-indexeddb@6.2.5:
+    resolution: {integrity: sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==}
+    engines: {node: '>=18'}
 
   fast-decode-uri-component@1.0.1:
     resolution: {integrity: sha512-WKgKWg5eUxvRZGwW8FvfbaH7AXSh2cL+3j5fMGzUMCxWBJ3dV3a7Wz8y2f/uQ0e3B6WmodD3oS54jTQ9HVTIIg==}
@@ -2972,6 +2988,8 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
+  dexie@4.4.4: {}
+
   drizzle-kit@0.31.10:
     dependencies:
       '@drizzle-team/brocli': 0.10.2
@@ -3154,6 +3172,8 @@ snapshots:
   expand-template@2.0.3: {}
 
   expect-type@1.4.0: {}
+
+  fake-indexeddb@6.2.5: {}
 
   fast-decode-uri-component@1.0.1: {}
 
