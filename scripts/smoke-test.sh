@@ -108,12 +108,59 @@ grep -qi 'set-cookie:.*SameSite=Lax' "$login_headers"
 grep -qi '^cache-control: no-store' "$login_headers"
 token="$(awk '$6=="kaoyan_session" {print $7}' "$cookie")"
 
+download_and_validate_export() {
+  local label="$1"
+  local export_headers="$scratch/export-$label-headers" export_json="$scratch/export-$label.json"
+  curl -kfsS -D "$export_headers" -o "$export_json" -b "$cookie" "$base/api/export"
+  grep -qi '^content-type: application/json; charset=utf-8' "$export_headers"
+  grep -Eqi '^content-disposition: attachment; filename="kaoyan-pomodoro-export-[0-9TZ-]+\.json"' "$export_headers"
+  grep -qi '^cache-control: no-store' "$export_headers"
+  grep -qi '^pragma: no-cache' "$export_headers"
+  compose exec -T api node -e '
+    let source = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { source += chunk; });
+    process.stdin.on("end", () => {
+      const value = JSON.parse(source);
+      const assert = (condition, message) => { if (!condition) throw new Error(message); };
+      const serialized = JSON.stringify(value);
+      assert(value.exportVersion === 1, "wrong export version");
+      assert(typeof value.exportedAt === "string" && value.exportedAt.endsWith("Z"), "missing UTC timestamp");
+      assert(value.tasks.some((task) => task.title === "smoke-original"), "task missing");
+      assert(value.dailyTasks.some((task) => task.title === "smoke-daily"), "daily task missing");
+      assert(value.focusSessions.some((session) => session.taskTitle === "smoke-daily"), "focus session missing");
+      assert(value.settings?.customFocusMinutes === 41, "settings missing");
+      assert(Array.isArray(value.devices) && value.devices.length > 0, "device metadata missing");
+      for (const secret of [process.argv[1], process.argv[2], "passwordHash", "password_hash", "tokenHash", "token_hash", "syncOperations", "sync_operations", "DATABASE_PATH"]) {
+        assert(!serialized.includes(secret), `export leaked ${secret}`);
+      }
+    });
+  ' "$password" "$token" < "$export_json"
+}
+
 created='2026-07-13T12:00:00.000Z'
 curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' --data-binary @- "$base/api/sync/push" > "$scratch/push.json" <<JSON
 {"operations":[{"operationId":"11111111-1111-4111-8111-111111111111","entityId":"22222222-2222-4222-8222-222222222222","baseVersion":0,"createdAt":"$created","entityType":"task","operationType":"create","payload":{"title":"smoke-original","subject":"math","defaultPomodoroTarget":2,"defaultTimerPreset":"25-5","notes":null}}]}
 JSON
 grep -q '"status":"applied"' "$scratch/push.json"
 curl -kfsS -b "$cookie" "$base/api/sync/pull?cursor=0&limit=100" | grep -q 'smoke-original'
+
+curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' --data-binary @- "$base/api/sync/push" > "$scratch/push-daily.json" <<JSON
+{"operations":[{"operationId":"44444444-4444-4444-8444-444444444444","entityId":"55555555-5555-4555-8555-555555555555","baseVersion":0,"createdAt":"$created","entityType":"dailyTask","operationType":"create","payload":{"sourceTaskId":null,"date":"2026-07-13","title":"smoke-daily","subject":"math","pomodoroTarget":2,"timerPreset":"25-5","sortOrder":0}}]}
+JSON
+grep -q '"status":"applied"' "$scratch/push-daily.json"
+curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' \
+  --data-binary '{"expectedVersion":1,"customFocusMinutes":41}' "$base/api/settings" -X PATCH > "$scratch/settings.json"
+grep -q '"customFocusMinutes":41' "$scratch/settings.json"
+curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' --data-binary @- "$base/api/timer/start" > "$scratch/timer-start.json" <<JSON
+{"id":"66666666-6666-4666-8666-666666666666","dailyTaskId":"55555555-5555-4555-8555-555555555555","dailyTaskVersion":1,"phase":"focus","plannedSeconds":60}
+JSON
+grep -q '"outcome":"started"' "$scratch/timer-start.json"
+curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' \
+  --data-binary '{"expectedVersion":1,"reason":"smoke validation"}' \
+  "$base/api/timer/66666666-6666-4666-8666-666666666666/exit" > "$scratch/timer-exit.json"
+grep -q '"taskTitle":"smoke-daily"' "$scratch/timer-exit.json"
+download_and_validate_export initial
 
 backup_path="$(compose run --rm --no-deps backup /app/scripts/backup.sh manual | tail -n 1)"
 backup_name="$(basename "$backup_path")"
@@ -129,10 +176,12 @@ grep -q '"status":"applied"' "$scratch/update.json"
 MSYS_NO_PATHCONV=1 bash scripts/restore.sh "$backup_name"
 wait_healthy backup
 curl -kfsS -b "$cookie" "$base/api/sync/pull?cursor=0&limit=100" | grep -q 'smoke-original'
+download_and_validate_export restored
 
 compose up -d --force-recreate api
 for _ in {1..30}; do curl -kfsS "$base/api/health/ready" >/dev/null && break; sleep 2; done
 compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM tasks WHERE title=\"smoke-original\";")" -eq 1'
+download_and_validate_export recreated
 
 corrupt_name="kaoyan-20260713T125900000000000Z-manual.sqlite.gz"
 compose run --rm --no-deps backup sh -c "printf 'not-a-gzip-archive' > /backups/$corrupt_name"

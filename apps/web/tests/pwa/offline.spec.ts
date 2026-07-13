@@ -15,6 +15,11 @@ test('production PWA reopens offline from IndexedDB without caching API data', a
   expect(login.headers()['cache-control']).toBe('no-store');
   await expect(page.getByRole('heading', { name: '今天也稳稳推进。' })).toBeVisible();
 
+  const exported = await page.request.get('/api/export');
+  expect(exported.status()).toBe(200);
+  expect(exported.headers()['cache-control']).toBe('no-store');
+  expect(exported.headers()['content-disposition']).toContain('attachment;');
+
   await page.locator('.sidebar').getByRole('button', { name: '任务库', exact: true }).click();
   await page.getByRole('button', { name: '新建长期任务' }).click();
   await page.getByLabel('任务名称').fill('PWA 离线副本');
@@ -37,6 +42,7 @@ test('production PWA reopens offline from IndexedDB without caching API data', a
     return urls;
   });
   expect(cachedUrls.some((url) => new URL(url).pathname.startsWith('/api/'))).toBe(false);
+  expect(cachedUrls.some((url) => new URL(url).pathname === '/api/export')).toBe(false);
 
   await context.setOffline(true);
   await page.close();

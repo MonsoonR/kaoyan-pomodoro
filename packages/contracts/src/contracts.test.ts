@@ -22,6 +22,7 @@ import {
   ResolvedConflictResultSchema,
   SyncChangeSchema,
   SyncOperationSchema,
+  UserDataExportSchema,
 } from './index';
 
 const entityId = '018f556e-5bbb-7850-8117-41a14e88b577';
@@ -72,6 +73,45 @@ describe('authentication contracts', () => {
     });
     expect(() =>
       DeviceIdParamsSchema.parse({ deviceId: 'not-a-uuid' }),
+    ).toThrow();
+  });
+});
+
+describe('UserDataExportSchema', () => {
+  it('validates the versioned, strict, user-readable export envelope', () => {
+    const value = {
+      exportVersion: 1,
+      exportedAt: timestamp,
+      account: { id: entityId, username: 'learner' },
+      tasks: [],
+      dailyTasks: [],
+      focusSessions: [],
+      settings: null,
+      activeTimer: null,
+      devices: [
+        {
+          deviceId: operationId,
+          deviceName: 'Chrome · Windows',
+          browser: 'Chrome',
+          operatingSystem: 'Windows',
+          createdAt: timestamp,
+          lastActiveAt: timestamp,
+          current: true,
+          revokedAt: null,
+        },
+      ],
+      conflicts: [],
+    };
+
+    expect(UserDataExportSchema.parse(value)).toEqual(value);
+    expect(() =>
+      UserDataExportSchema.parse({
+        ...value,
+        devices: [{ ...value.devices[0], tokenHash: 'secret' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      UserDataExportSchema.parse({ ...value, exportVersion: 2 }),
     ).toThrow();
   });
 });

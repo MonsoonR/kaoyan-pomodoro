@@ -24,7 +24,8 @@ async function manualSync(page: Page) {
     await page.getByRole('button', { name: '返回今日任务', exact: true }).first().click();
   }
   if (await page.getByRole('button', { name: '同步计时器' }).count()) {
-    await page.getByRole('button', { name: '同步计时器' }).click();
+    await page.getByRole('button', { name: '同步计时器' })
+      .evaluate((button: HTMLButtonElement) => button.click());
     const busyOrEnded = page.getByRole('button', { name: '计时器同步中…' })
       .or(page.getByText('计时器已结束'));
     await expect(busyOrEnded).toBeVisible();
@@ -179,7 +180,8 @@ test('two isolated devices share, race, and reconcile one global timer', async (
     await deviceA.getByRole('button', { name: '返回当前计时器' }).click();
     await contextA.setOffline(true);
     await deviceA.getByRole('button', { name: '暂停计时器' }).click();
-    await expect(deviceA.getByRole('status')).toContainText('等待同步');
+    await expect(deviceA.locator('.focus-actions').getByRole('status'))
+      .toContainText('等待同步');
     await exitTimer(deviceB, '临时有事');
     await contextA.setOffline(false);
     await manualSync(deviceA);

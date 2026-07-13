@@ -627,6 +627,32 @@ export const ConflictSchema = z.discriminatedUnion('status', [
     resolvedAt: TimestampSchema,
   }).strict(),
 ]);
+export const ExportedDeviceSchema = z
+  .object({
+    deviceId: IdSchema,
+    deviceName: z.string().min(1).max(100),
+    browser: z.string().min(1).max(50),
+    operatingSystem: z.string().min(1).max(50),
+    createdAt: TimestampSchema,
+    lastActiveAt: TimestampSchema,
+    current: z.boolean(),
+    revokedAt: TimestampSchema.nullable(),
+  })
+  .strict();
+export const UserDataExportSchema = z
+  .object({
+    exportVersion: z.literal(1),
+    exportedAt: TimestampSchema,
+    account: AuthUserSchema,
+    tasks: z.array(TaskSchema),
+    dailyTasks: z.array(DailyTaskSchema),
+    focusSessions: z.array(FocusSessionSchema),
+    settings: SettingsSchema.nullable(),
+    activeTimer: ActiveTimerSchema.nullable(),
+    devices: z.array(ExportedDeviceSchema),
+    conflicts: z.array(ConflictSchema),
+  })
+  .strict();
 export const ConflictListResponseSchema = z
   .object({ conflicts: z.array(ConflictSchema) })
   .strict();
@@ -705,6 +731,8 @@ export type Settings = z.infer<typeof SettingsSchema>;
 export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
 export type OperationReceipt = z.infer<typeof OperationReceiptSchema>;
 export type Conflict = z.infer<typeof ConflictSchema>;
+export type ExportedDevice = z.infer<typeof ExportedDeviceSchema>;
+export type UserDataExport = z.infer<typeof UserDataExportSchema>;
 export type ConflictType = z.infer<typeof ConflictTypeSchema>;
 export type ConflictResolution = z.infer<typeof ConflictResolutionSchema>;
 export type ResolveConflictRequest = z.infer<

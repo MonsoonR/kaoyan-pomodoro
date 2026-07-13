@@ -25,5 +25,13 @@ describe('production PWA policy', () => {
       rule.urlPattern instanceof RegExp && rule.urlPattern.test('/api/auth/me'),
     );
     expect(apiRule?.handler).toBe('NetworkOnly');
+    expect(
+      apiRule?.urlPattern instanceof RegExp &&
+      apiRule.urlPattern.test('/api/export'),
+    ).toBe(true);
+    expect(
+      pwaOptions.workbox?.navigateFallbackDenylist?.some((pattern) =>
+        pattern.test('/api/export')),
+    ).toBe(true);
   });
 });

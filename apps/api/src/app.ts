@@ -26,6 +26,7 @@ import { syncRoutes } from './routes/sync';
 import { timerRoutes } from './routes/timer';
 import { conflictRoutes } from './routes/conflicts';
 import { healthRoutes } from './routes/health';
+import { exportRoutes } from './routes/export';
 import {
   ConflictAlreadyResolvedError,
   ConflictResolutionTargetExistsError,
@@ -112,6 +113,7 @@ export async function createApp(options: AppOptions) {
   await syncRoutes(app, services);
   await timerRoutes(app, services);
   await conflictRoutes(app, services);
+  await exportRoutes(app, services);
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {

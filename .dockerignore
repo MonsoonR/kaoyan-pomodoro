@@ -17,3 +17,5 @@ caddy-config
 *.pem
 *.key
 .maintenance.lock
+.smoke-*
+kaoyan-pomodoro-export-*.json

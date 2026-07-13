@@ -50,16 +50,17 @@ const expectNoStore = (response: { headers: Record<string, unknown> }) => {
 };
 
 describe('API HTTP cache prevention', () => {
-  it('marks health, session, sync and timer success responses no-store', async () => {
+  it('marks health, session, sync, timer and export success responses no-store', async () => {
     const responses = await Promise.all([
       app.inject({ method: 'GET', url: '/api/health/live' }),
       app.inject({ method: 'GET', url: '/api/health/ready' }),
       app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie } }),
       app.inject({ method: 'GET', url: '/api/sync/pull?cursor=0&limit=1', headers: { cookie } }),
       app.inject({ method: 'GET', url: '/api/timer', headers: { cookie } }),
+      app.inject({ method: 'GET', url: '/api/export', headers: { cookie } }),
     ]);
     expect(responses.map((response) => response.statusCode)).toEqual([
-      200, 200, 200, 200, 200,
+      200, 200, 200, 200, 200, 200,
     ]);
     responses.forEach(expectNoStore);
   });

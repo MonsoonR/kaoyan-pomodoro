@@ -113,3 +113,8 @@
 .pwa-notice button:last-child { background: transparent; color: #315a4a; }
 .pwa-notice--error { border-color: #d9a4a4; color: #7d2020; }
 .pwa-update-reopen { position: fixed; z-index: 1000; right: 1rem; bottom: 1rem; }
+
+@media (max-width: 720px) {
+  .pwa-notice { top: 12px; bottom: auto; width: calc(100vw - 24px); flex-wrap: wrap; }
+  .pwa-update-reopen { top: 12px; right: 12px; bottom: auto; }
+}

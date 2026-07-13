@@ -14,3 +14,5 @@ caddy-config/
 *.sqlite-*
 *.sqlite.gz
 .maintenance.lock
+.smoke-*/
+kaoyan-pomodoro-export-*.json
