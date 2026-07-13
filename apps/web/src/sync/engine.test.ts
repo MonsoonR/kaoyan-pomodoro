@@ -369,6 +369,46 @@ describe('synchronization engine', () => {
     expect(calls).toBe(2);
   });
 
+  it('pushes offline Task create, update, and archive with predicted server bases', async () => {
+    const rows = [
+      await createLocalTask(),
+      await queue.updateTask(TASK_ID, { title: 'Limits' }),
+      await queue.archiveTask(TASK_ID),
+    ];
+    api.pushes.push({
+      receipts: rows.map((row, index) =>
+        receipt(row.operationId, 'applied', index + 1)),
+      latestCursor: 3,
+    });
+    await engine.manualSync();
+    expect(api.pushedBatches[0]?.map((operation) => operation.baseVersion))
+      .toEqual([0, 1, 2]);
+    expect(await database.operations.where('state').equals('rejected').count())
+      .toBe(0);
+    expect(await database.operations.where('state').equals('acknowledged').count())
+      .toBe(3);
+  });
+
+  it('pushes offline timer start and pause without stale timer versions', async () => {
+    const rows = [
+      await queue.startTimer(TIMER_ID, {
+        dailyTaskId: DAILY_ID, dailyTaskVersion: 1,
+        phase: 'focus', plannedSeconds: 1500,
+      }),
+      await queue.pauseTimer(TIMER_ID, 'Interruption'),
+    ];
+    api.pushes.push({
+      receipts: rows.map((row, index) =>
+        receipt(row.operationId, 'applied', index + 1)),
+      latestCursor: 2,
+    });
+    await engine.manualSync();
+    expect(api.pushedBatches[0]?.map((operation) => operation.baseVersion))
+      .toEqual([0, 1]);
+    expect(await database.operations.where('state').equals('rejected').count())
+      .toBe(0);
+  });
+
   it('updates cached conflicts to resolved without deleting them', async () => {
     api.conflictLists.push([conflict()]);
     await engine.manualSync();

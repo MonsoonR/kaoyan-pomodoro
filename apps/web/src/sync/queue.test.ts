@@ -7,6 +7,7 @@ import {
   settings,
   TASK_ID,
   TIMER_ID,
+  task,
   USER_A,
 } from '../test/fixtures';
 import { OfflineOperationQueue } from './queue';
@@ -140,5 +141,128 @@ describe('offline operation queue', () => {
     expect(await database.countPendingOperations(
       '00000000-0000-4000-8000-000000000002',
     )).toBe(0);
+  });
+
+  it('predicts Task create, update, archive, and delete server bases', async () => {
+    const rows = [
+      await queue.createTask(TASK_ID, createPayload),
+      await queue.updateTask(TASK_ID, { title: 'Limits' }),
+      await queue.archiveTask(TASK_ID),
+      await queue.deleteTask(TASK_ID),
+    ];
+    expect(rows.map((row) => row.operation.baseVersion))
+      .toEqual([0, 1, 2, 3]);
+  });
+
+  it('predicts through an equal-value update without changing UI version', async () => {
+    const value = task({ title: 'Calculus' });
+    await database.replicas.put({
+      key: replicaKey(USER_A, 'task', TASK_ID), userId: USER_A,
+      entityType: 'task', entityId: TASK_ID,
+      serverValue: value, projectedValue: value, serverVersion: 1,
+      pendingOperationIds: [], updatedLocallyAt: null,
+    });
+    const update = await queue.updateTask(TASK_ID, { title: 'Calculus' });
+    expect((await database.replicas.get(
+      replicaKey(USER_A, 'task', TASK_ID),
+    ))?.projectedValue).toMatchObject({ version: 1, archived: false });
+    const archive = await queue.archiveTask(TASK_ID);
+    expect(update.operation.baseVersion).toBe(1);
+    expect(archive.operation.baseVersion).toBe(2);
+    expect((await database.replicas.get(
+      replicaKey(USER_A, 'task', TASK_ID),
+    ))?.projectedValue).toMatchObject({ version: 2, archived: true });
+    const afterUpdate = await database.operations.get(update.sequence ?? 0);
+    expect(afterUpdate?.operation.baseVersion).toBe(1);
+  });
+
+  it('predicts DailyTask create, complete, restore, and delete server bases', async () => {
+    const rows = [
+      await queue.createDailyTask(DAILY_ID, {
+        sourceTaskId: null, date: '2026-07-13', title: 'Vocabulary',
+        subject: 'English', pomodoroTarget: 2,
+        timerPreset: '25-5', sortOrder: 0,
+      }),
+      await queue.completeDailyTask(DAILY_ID),
+      await queue.restoreDailyTask(DAILY_ID),
+      await queue.deleteDailyTask(DAILY_ID),
+    ];
+    expect(rows.map((row) => row.operation.baseVersion))
+      .toEqual([0, 1, 2, 3]);
+  });
+
+  it('predicts timer start, pause, resume, and exit server bases', async () => {
+    const rows = [
+      await queue.startTimer(TIMER_ID, {
+        dailyTaskId: DAILY_ID, dailyTaskVersion: 1,
+        phase: 'focus', plannedSeconds: 1500,
+      }),
+      await queue.pauseTimer(TIMER_ID, 'Break'),
+      await queue.resumeTimer(TIMER_ID),
+      await queue.exitTimer(TIMER_ID, 'Done'),
+    ];
+    expect(rows.map((row) => row.operation.baseVersion))
+      .toEqual([0, 1, 2, 3]);
+  });
+
+  it('uses an acknowledged receipt version before pull arrives', async () => {
+    const create = await queue.createTask(TASK_ID, createPayload);
+    await database.operations.update(create.sequence ?? 0, {
+      state: 'acknowledged',
+      receipt: {
+        operationId: create.operationId, status: 'applied', entityVersion: 1,
+        conflictId: null, errorCode: null, errorMessage: null,
+      },
+    });
+    const update = await queue.updateTask(TASK_ID, { title: 'Limits' });
+    expect(update.operation.baseVersion).toBe(1);
+  });
+
+  it('combines acknowledged receipt versions with later pending operations', async () => {
+    const create = await queue.createTask(TASK_ID, createPayload);
+    await database.operations.update(create.sequence ?? 0, {
+      state: 'acknowledged',
+      receipt: {
+        operationId: create.operationId, status: 'applied', entityVersion: 1,
+        conflictId: null, errorCode: null, errorMessage: null,
+      },
+    });
+    const update = await queue.updateTask(TASK_ID, { title: 'Limits' });
+    const archive = await queue.archiveTask(TASK_ID);
+    expect(update.operation.baseVersion).toBe(1);
+    expect(archive.operation.baseVersion).toBe(2);
+  });
+
+  it('excludes rejected and conflict operations from version prediction', async () => {
+    const value = task();
+    await database.replicas.put({
+      key: replicaKey(USER_A, 'task', TASK_ID), userId: USER_A,
+      entityType: 'task', entityId: TASK_ID,
+      serverValue: value, projectedValue: value, serverVersion: 1,
+      pendingOperationIds: [], updatedLocallyAt: null,
+    });
+    const rejected = await queue.updateTask(TASK_ID, { title: 'Rejected' });
+    await database.operations.update(rejected.sequence ?? 0, {
+      state: 'rejected',
+    });
+    const conflicted = await queue.updateTask(TASK_ID, { title: 'Conflict' });
+    await database.operations.update(conflicted.sequence ?? 0, {
+      state: 'conflict',
+    });
+    const archive = await queue.archiveTask(TASK_ID);
+    expect(conflicted.operation.baseVersion).toBe(1);
+    expect(archive.operation.baseVersion).toBe(1);
+  });
+
+  it('predicts from persisted operations after IndexedDB restart', async () => {
+    const name = database.name;
+    await queue.createTask(TASK_ID, createPayload);
+    await queue.updateTask(TASK_ID, { title: 'Limits' });
+    database.close();
+    database = createSyncDatabase(name);
+    await database.open();
+    queue = new OfflineOperationQueue(database, USER_A);
+    const archive = await queue.archiveTask(TASK_ID);
+    expect(archive.operation.baseVersion).toBe(2);
   });
 });

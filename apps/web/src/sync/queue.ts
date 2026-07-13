@@ -15,6 +15,7 @@ import {
   replicaKey,
 } from '../db/types';
 import { projectEntity, projectTimer } from './projector';
+import { predictServerVersion } from './version-predictor';
 
 type OperationDraft = Omit<SyncOperation, 'operationId' | 'createdAt'>;
 type EnqueueListener = () => void;
@@ -53,11 +54,29 @@ export class OfflineOperationQueue {
     entityType: SyncOperation['entityType'],
     entityId: string,
   ): Promise<number> {
-    const row = await this.database.replicas.get(
-      replicaKey(this.userId, entityType, entityId),
+    return this.database.transaction(
+      'r',
+      [this.database.replicas, this.database.operations],
+      async () => {
+        const replica = await this.database.replicas.get(
+          replicaKey(this.userId, entityType, entityId),
+        );
+        const operations = await this.database.operations
+          .where('[userId+entityType+entityId]')
+          .equals([this.userId, entityType, entityId])
+          .filter(
+            (row) =>
+              row.state === 'pending' ||
+              row.state === 'acknowledged',
+          )
+          .sortBy('sequence');
+        return predictServerVersion(
+          replica?.serverVersion ?? 0,
+          replica?.serverValue ?? null,
+          operations,
+        );
+      },
     );
-    const value = row?.projectedValue;
-    return value && 'version' in value ? value.version : 0;
   }
 
   async enqueueOperation(
