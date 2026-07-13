@@ -89,6 +89,32 @@ describe('timer finalization transaction failures', () => {
         defaultChangeLogWriter(sqlite, input);
       },
     });
+  const captureError = (action: () => unknown) => {
+    try {
+      action();
+      return null;
+    } catch (error) {
+      return error;
+    }
+  };
+  const timerState = () => ({
+    timer: connection.sqlite
+      .prepare(
+        'SELECT status,version,updated_at,deleted_at FROM active_timer WHERE id=?',
+      )
+      .get(timerId),
+    daily: connection.sqlite
+      .prepare(
+        'SELECT status,pomodoro_completed,version FROM daily_tasks WHERE id=?',
+      )
+      .get(dailyId),
+    sessions: connection.sqlite
+      .prepare('SELECT count(*) count FROM focus_sessions')
+      .get(),
+    changes: connection.sqlite
+      .prepare('SELECT count(*) count FROM sync_changes')
+      .get(),
+  });
 
   it('rolls back when FocusSession insertion fails', () => {
     const timer = service({
@@ -119,5 +145,112 @@ describe('timer finalization transaction failures', () => {
       timer.completeTimer(userId, timerId, { expectedVersion: 1 }),
     ).toThrow('injected change failure');
     expectUnchanged();
+  });
+
+  it('rejects exit after server time moves behind the latest pause update', () => {
+    const startedAt = Date.parse('2026-07-13T10:00:00.000Z');
+    connection.sqlite
+      .prepare('UPDATE active_timer SET target_end_at=? WHERE id=?')
+      .run(startedAt + 600_000, timerId);
+    now = startedAt + 10_000;
+    service().pauseTimer(userId, timerId, {
+      expectedVersion: 1,
+      reason: 'Pause',
+    });
+    const before = timerState();
+    now = startedAt + 5_000;
+    expect(
+      captureError(() =>
+        service().exitTimer(userId, timerId, {
+          expectedVersion: 2,
+          reason: 'Exit',
+        }),
+      ),
+    ).toMatchObject({ code: 'SERVER_TIME_MOVED_BACKWARDS' });
+    expect(timerState()).toEqual(before);
+  });
+
+  it('rejects pause after time moves behind the latest resume update', () => {
+    const startedAt = Date.parse('2026-07-13T10:00:00.000Z');
+    connection.sqlite
+      .prepare('UPDATE active_timer SET target_end_at=? WHERE id=?')
+      .run(startedAt + 600_000, timerId);
+    now = startedAt + 10_000;
+    service().pauseTimer(userId, timerId, {
+      expectedVersion: 1,
+      reason: 'Pause',
+    });
+    now = startedAt + 20_000;
+    service().resumeTimer(userId, timerId, { expectedVersion: 2 });
+    const before = timerState();
+    now = startedAt + 15_000;
+    expect(
+      captureError(() =>
+        service().pauseTimer(userId, timerId, {
+          expectedVersion: 3,
+          reason: 'Backwards',
+        }),
+      ),
+    ).toMatchObject({ code: 'SERVER_TIME_MOVED_BACKWARDS' });
+    expect(timerState()).toEqual(before);
+  });
+
+  it('rejects complete after time moves behind the latest resume update', () => {
+    const startedAt = Date.parse('2026-07-13T10:00:00.000Z');
+    connection.sqlite
+      .prepare('UPDATE active_timer SET target_end_at=? WHERE id=?')
+      .run(startedAt + 600_000, timerId);
+    now = startedAt + 10_000;
+    service().pauseTimer(userId, timerId, {
+      expectedVersion: 1,
+      reason: 'Pause',
+    });
+    now = startedAt + 20_000;
+    service().resumeTimer(userId, timerId, { expectedVersion: 2 });
+    connection.sqlite
+      .prepare('UPDATE active_timer SET target_end_at=? WHERE id=?')
+      .run(startedAt + 15_000, timerId);
+    const before = timerState();
+    now = startedAt + 18_000;
+    expect(
+      captureError(() =>
+        service().completeTimer(userId, timerId, { expectedVersion: 3 }),
+      ),
+    ).toMatchObject({ code: 'SERVER_TIME_MOVED_BACKWARDS' });
+    expect(timerState()).toEqual(before);
+  });
+
+  it('allows a timer mutation when server time equals updatedAt', () => {
+    now = Date.parse('2026-07-13T10:00:00.000Z');
+    expect(
+      service().pauseTimer(userId, timerId, {
+        expectedVersion: 1,
+        reason: 'Same millisecond',
+      }).timer,
+    ).toMatchObject({ status: 'paused', version: 2 });
+  });
+
+  it('does not report success or write a change after a zero-row timer update', () => {
+    const startedAt = Date.parse('2026-07-13T10:00:00.000Z');
+    connection.sqlite
+      .prepare('UPDATE active_timer SET target_end_at=? WHERE id=?')
+      .run(startedAt + 600_000, timerId);
+    connection.sqlite.exec(`CREATE TEMP TRIGGER ignore_timer_pause
+      BEFORE UPDATE ON active_timer
+      WHEN NEW.status = 'paused'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END`);
+    now = startedAt + 1_000;
+    const before = timerState();
+    expect(
+      captureError(() =>
+        service().pauseTimer(userId, timerId, {
+          expectedVersion: 1,
+          reason: 'Ignored update',
+        }),
+      ),
+    ).toMatchObject({ code: 'INVALID_TIMER_STATE' });
+    expect(timerState()).toEqual(before);
   });
 });

@@ -116,6 +116,41 @@ describe('sync HTTP API', () => {
       response.json().receipts.map((r: { status: string }) => r.status),
     ).toEqual(['applied', 'rejected', 'rejected']);
   });
+  it('persists invalid timerStart baseVersion and continues the batch', async () => {
+    const invalidTimer = operation({
+      entityId: '48888888-8888-4888-8888-888888888888',
+      entityType: 'activeTimer',
+      operationType: 'timerStart',
+      baseVersion: 1,
+      payload: {
+        dailyTaskId: '49999999-9999-4999-8999-999999999999',
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 60,
+      },
+    });
+    const validTask = operation();
+    const first = await push([invalidTimer, validTask]);
+    expect(first.json().receipts).toMatchObject([
+      {
+        status: 'rejected',
+        errorCode: 'INVALID_BASE_VERSION',
+        errorMessage: 'Create requires baseVersion 0',
+      },
+      { status: 'applied' },
+    ]);
+    const retry = await push([invalidTimer, validTask]);
+    expect(retry.json().receipts).toMatchObject([
+      { status: 'rejected', errorCode: 'INVALID_BASE_VERSION' },
+      { status: 'duplicate' },
+    ]);
+    expect(
+      db.sqlite.prepare('SELECT count(*) count FROM active_timer').get(),
+    ).toEqual({ count: 0 });
+    expect(
+      db.sqlite.prepare('SELECT count(*) count FROM tasks WHERE id=?').get(task),
+    ).toEqual({ count: 1 });
+  });
   it('continues after a conflict and duplicates committed work on batch retry', async () => {
     const first = operation();
     await push([first]);

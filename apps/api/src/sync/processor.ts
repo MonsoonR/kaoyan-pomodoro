@@ -154,6 +154,13 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
     if (operation.entityType === 'activeTimer') {
       try {
         if (operation.operationType === 'timerStart') {
+          if (operation.baseVersion !== 0)
+            return rejected(
+              operation,
+              null,
+              'INVALID_BASE_VERSION',
+              'Create requires baseVersion 0',
+            );
           const result = timer.startTimer(userId, {
             id: operation.entityId,
             dailyTaskId: operation.payload.dailyTaskId,
@@ -358,6 +365,12 @@ export function createSyncProcessor(deps: ProcessorDependencies) {
           }).version,
         );
       }
+      if (
+        operation.operationType === 'delete' ||
+        operation.operationType === 'complete' ||
+        operation.operationType === 'restore'
+      )
+        daily.assertTerminalMutationAllowed(userId, operation.entityId);
       const current = daily.getAny(userId, operation.entityId);
       if (operation.operationType === 'create') {
         if (operation.baseVersion !== 0)

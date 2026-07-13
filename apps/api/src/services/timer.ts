@@ -145,6 +145,47 @@ export function createTimerService(deps: TimerDependencies) {
       throw new StaleTimerVersionError(row.version, current, nowIso);
     }
   };
+  const assertServerTimeNotMovedBackwards = (
+    row: ActiveTimerRow,
+    nowMilliseconds: number,
+  ) => {
+    if (nowMilliseconds < row.updated_at)
+      throw new TimerError('SERVER_TIME_MOVED_BACKWARDS');
+  };
+  const assertTimerUpdateApplied = (
+    userId: string,
+    timerId: string,
+    expectedVersion: number,
+    changes: number,
+    serverTime: string,
+  ) => {
+    if (changes === 1) return;
+    const current = getTimerRow(userId, timerId);
+    if (!current || current.deleted_at !== null)
+      throw new TimerError('TIMER_NOT_ACTIVE');
+    if (current.version !== expectedVersion)
+      throw new StaleTimerVersionError(
+        current.version,
+        serializeActiveTimer(current),
+        serverTime,
+      );
+    throw new TimerError('INVALID_TIMER_STATE');
+  };
+  const assertDailyUpdateApplied = (
+    userId: string,
+    dailyTaskId: string,
+    expectedVersion: number,
+    changes: number,
+    staleVersionError: boolean,
+  ) => {
+    if (changes === 1) return;
+    const current = getDaily(userId, dailyTaskId);
+    if (!current || current.deleted_at !== null)
+      throw new TimerError('DAILY_TASK_NOT_AVAILABLE');
+    if (staleVersionError && current.version !== expectedVersion)
+      throw new StaleVersionError(current.version);
+    throw new TimerError('INVALID_DAILY_TASK_STATE');
+  };
   const finalized = (
     userId: string,
     timerId: string,
@@ -170,8 +211,7 @@ export function createTimerService(deps: TimerDependencies) {
       if (prior) return prior;
       const row = requireLive(userId, timerId);
       requireVersion(row, input.expectedVersion, now.iso);
-      if (now.milliseconds < row.started_at)
-        throw new TimerError('SERVER_TIME_MOVED_BACKWARDS');
+      assertServerTimeNotMovedBackwards(row, now.milliseconds);
       if (result === 'completed') {
         if (row.status !== 'running') throw new TimerError('INVALID_TIMER_STATE');
         if (now.milliseconds < row.target_end_at)
@@ -206,16 +246,32 @@ export function createTimerService(deps: TimerDependencies) {
             completed >= daily.pomodoro_target
               ? 'awaiting_confirmation'
               : 'pending';
-          deps.sqlite.prepare(`UPDATE daily_tasks SET pomodoro_completed=?,
+          const updated = deps.sqlite.prepare(`UPDATE daily_tasks SET pomodoro_completed=?,
             status=?,completed_at=NULL,version=version+1,updated_at=?
-            WHERE id=? AND user_id=?`).run(
-            completed,status,now.milliseconds,row.daily_task_id,userId,
+            WHERE id=? AND user_id=? AND version=? AND status='active'
+              AND deleted_at IS NULL`).run(
+            completed,status,now.milliseconds,row.daily_task_id,userId,daily.version,
+          );
+          assertDailyUpdateApplied(
+            userId,
+            row.daily_task_id,
+            daily.version,
+            updated.changes,
+            false,
           );
         } else {
-          deps.sqlite.prepare(`UPDATE daily_tasks SET status='pending',
+          const updated = deps.sqlite.prepare(`UPDATE daily_tasks SET status='pending',
             completed_at=NULL,version=version+1,updated_at=?
-            WHERE id=? AND user_id=?`).run(
-            now.milliseconds,row.daily_task_id,userId,
+            WHERE id=? AND user_id=? AND version=? AND status='active'
+              AND deleted_at IS NULL`).run(
+            now.milliseconds,row.daily_task_id,userId,daily.version,
+          );
+          assertDailyUpdateApplied(
+            userId,
+            row.daily_task_id,
+            daily.version,
+            updated.changes,
+            false,
           );
         }
         writeDaily(userId, row.daily_task_id, now.milliseconds);
@@ -245,10 +301,18 @@ export function createTimerService(deps: TimerDependencies) {
         payload: session,
         changedAt: now.milliseconds,
       });
-      deps.sqlite.prepare(`UPDATE active_timer SET interruption_reason=?,
+      const deleted = deps.sqlite.prepare(`UPDATE active_timer SET interruption_reason=?,
         version=version+1,updated_at=?,deleted_at=? WHERE id=? AND user_id=?
-        AND deleted_at IS NULL`).run(
+        AND version=? AND status=? AND deleted_at IS NULL`).run(
         interruptionReason,now.milliseconds,now.milliseconds,timerId,userId,
+        row.version,row.status,
+      );
+      assertTimerUpdateApplied(
+        userId,
+        timerId,
+        row.version,
+        deleted.changes,
+        now.iso,
       );
       const deletedRow = getTimerRow(userId, timerId);
       if (!deletedRow) throw new TimerError('TIMER_NOT_ACTIVE');
@@ -300,10 +364,17 @@ export function createTimerService(deps: TimerDependencies) {
         if (daily.status !== 'pending')
           throw new TimerError('INVALID_DAILY_TASK_STATE');
         if (input.phase === 'focus') {
-          deps.sqlite.prepare(`UPDATE daily_tasks SET status='active',
+          const updated = deps.sqlite.prepare(`UPDATE daily_tasks SET status='active',
             version=version+1,updated_at=? WHERE id=? AND user_id=?
-            AND version=? AND deleted_at IS NULL`).run(
+            AND version=? AND status='pending' AND deleted_at IS NULL`).run(
             now.milliseconds,input.dailyTaskId,userId,input.dailyTaskVersion,
+          );
+          assertDailyUpdateApplied(
+            userId,
+            input.dailyTaskId,
+            input.dailyTaskVersion,
+            updated.changes,
+            true,
           );
           writeDaily(userId, input.dailyTaskId, now.milliseconds);
         }
@@ -328,15 +399,22 @@ export function createTimerService(deps: TimerDependencies) {
         const now = serverNow();
         const row = requireLive(userId, timerId);
         requireVersion(row, input.expectedVersion, now.iso);
-        if (now.milliseconds < row.started_at)
-          throw new TimerError('SERVER_TIME_MOVED_BACKWARDS');
+        assertServerTimeNotMovedBackwards(row, now.milliseconds);
         if (row.status !== 'running') throw new TimerError('INVALID_TIMER_STATE');
         if (now.milliseconds >= row.target_end_at)
           throw new TimerError('TIMER_ALREADY_ELAPSED');
-        deps.sqlite.prepare(`UPDATE active_timer SET status='paused',paused_at=?,
+        const updated = deps.sqlite.prepare(`UPDATE active_timer SET status='paused',paused_at=?,
           interruption_reason=?,version=version+1,updated_at=?
-          WHERE id=? AND user_id=? AND version=? AND deleted_at IS NULL`).run(
+          WHERE id=? AND user_id=? AND version=? AND status='running'
+            AND deleted_at IS NULL`).run(
           now.milliseconds,input.reason,now.milliseconds,timerId,userId,row.version,
+        );
+        assertTimerUpdateApplied(
+          userId,
+          timerId,
+          row.version,
+          updated.changes,
+          now.iso,
         );
         const timer = serializeActiveTimer(requireLive(userId, timerId));
         writeTimer(userId, timer, 'upsert', now.milliseconds);
@@ -348,18 +426,26 @@ export function createTimerService(deps: TimerDependencies) {
         const now = serverNow();
         const row = requireLive(userId, timerId);
         requireVersion(row, input.expectedVersion, now.iso);
+        assertServerTimeNotMovedBackwards(row, now.milliseconds);
         if (row.status !== 'paused' || row.paused_at === null)
           throw new TimerError('INVALID_TIMER_STATE');
         const pauseDuration = now.milliseconds - row.paused_at;
         if (pauseDuration < 0)
           throw new TimerError('SERVER_TIME_MOVED_BACKWARDS');
-        deps.sqlite.prepare(`UPDATE active_timer SET status='running',
+        const updated = deps.sqlite.prepare(`UPDATE active_timer SET status='running',
           paused_at=NULL,target_end_at=target_end_at+?,
           accumulated_paused_seconds=accumulated_paused_seconds+?,
           version=version+1,updated_at=? WHERE id=? AND user_id=?
-          AND version=? AND deleted_at IS NULL`).run(
+          AND version=? AND status='paused' AND deleted_at IS NULL`).run(
           pauseDuration,Math.floor(pauseDuration / 1000),now.milliseconds,
           timerId,userId,row.version,
+        );
+        assertTimerUpdateApplied(
+          userId,
+          timerId,
+          row.version,
+          updated.changes,
+          now.iso,
         );
         const timer = serializeActiveTimer(requireLive(userId, timerId));
         writeTimer(userId, timer, 'upsert', now.milliseconds);

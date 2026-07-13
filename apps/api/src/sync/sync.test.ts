@@ -157,6 +157,149 @@ describe('server-managed timer synchronization', () => {
     ).toBe(true);
   });
 
+  it('rejects nonzero timerStart base versions before touching timer or task', () => {
+    prepareDaily();
+    const p = processor();
+    const changeCount = counts().changes;
+    for (const baseVersion of [1, 999]) {
+      const invalid = timerOp('timerStart', baseVersion, {
+        dailyTaskId: daily,
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 60,
+      });
+      const first = p.process(invalid, user, device);
+      expect(first).toMatchObject({
+        status: 'rejected',
+        errorCode: 'INVALID_BASE_VERSION',
+        errorMessage: 'Create requires baseVersion 0',
+      });
+      expect(p.process(invalid, user, device)).toEqual(first);
+    }
+    expect(
+      db.sqlite.prepare('SELECT count(*) n FROM active_timer').get(),
+    ).toEqual({ n: 0 });
+    expect(
+      db.sqlite
+        .prepare('SELECT status,version FROM daily_tasks WHERE id=?')
+        .get(daily),
+    ).toEqual({ status: 'pending', version: 1 });
+    expect(counts().changes).toBe(changeCount);
+    expect(
+      p.process(
+        timerOp('timerStart', 0, {
+          dailyTaskId: daily,
+          dailyTaskVersion: 1,
+          phase: 'focus',
+          plannedSeconds: 60,
+        }),
+        user,
+        device,
+      ),
+    ).toMatchObject({ status: 'applied', entityVersion: 1 });
+  });
+
+  it('checks the active timer lock before stale or future terminal decisions', () => {
+    prepareDaily();
+    const p = processor();
+    p.process(
+      timerOp('timerStart', 0, {
+        dailyTaskId: daily,
+        dailyTaskVersion: 1,
+        phase: 'short_break',
+        plannedSeconds: 60,
+      }),
+      user,
+      device,
+    );
+    const beforeConflicts = counts().conflicts;
+    const beforeChanges = counts().changes;
+    for (const [operationType, baseVersion] of [
+      ['delete', 0],
+      ['complete', 0],
+      ['restore', 0],
+      ['delete', 999],
+    ] as const) {
+      const operation = op({
+        entityId: daily,
+        entityType: 'dailyTask',
+        operationType,
+        baseVersion,
+        payload: {},
+      });
+      const first = p.process(operation, user, device);
+      expect(first).toMatchObject({
+        status: 'rejected',
+        errorCode: 'ACTIVE_TIMER_TASK_LOCKED',
+      });
+      expect(p.process(operation, user, device)).toEqual(first);
+    }
+    expect(counts().conflicts).toBe(beforeConflicts);
+    expect(counts().changes).toBe(beforeChanges);
+    expect(
+      db.sqlite
+        .prepare('SELECT status,version,deleted_at FROM daily_tasks WHERE id=?')
+        .get(daily),
+    ).toEqual({ status: 'pending', version: 1, deleted_at: null });
+
+    now = new Date(now.getTime() + 10_000);
+    p.process(
+      timerOp('timerExit', 1, { reason: 'Release task lock' }),
+      user,
+      device,
+    );
+    const deletion = op({
+      entityId: daily,
+      entityType: 'dailyTask',
+      operationType: 'delete',
+      baseVersion: 1,
+      payload: {},
+    });
+    expect(p.process(deletion, user, device)).toMatchObject({
+      status: 'applied',
+      entityVersion: 2,
+    });
+  });
+
+  it('persists a rejected receipt when sync timer time moves backwards', () => {
+    prepareDaily();
+    const p = processor();
+    p.process(
+      timerOp('timerStart', 0, {
+        dailyTaskId: daily,
+        dailyTaskVersion: 1,
+        phase: 'focus',
+        plannedSeconds: 60,
+      }),
+      user,
+      device,
+    );
+    now = new Date(now.getTime() + 10_000);
+    p.process(timerOp('timerPause', 1, { reason: 'Pause' }), user, device);
+    const before = counts();
+    now = new Date(now.getTime() - 5_000);
+    const exit = timerOp('timerExit', 2, { reason: 'Exit' });
+    const first = p.process(exit, user, device);
+    expect(first).toMatchObject({
+      status: 'rejected',
+      errorCode: 'SERVER_TIME_MOVED_BACKWARDS',
+    });
+    expect(p.process(exit, user, device)).toEqual(first);
+    expect(counts()).toMatchObject({
+      changes: before.changes,
+      conflicts: before.conflicts,
+      tasks: before.tasks,
+    });
+    expect(
+      db.sqlite
+        .prepare('SELECT status,version,deleted_at FROM active_timer WHERE id=?')
+        .get(timerId),
+    ).toEqual({ status: 'paused', version: 2, deleted_at: null });
+    expect(
+      db.sqlite.prepare('SELECT count(*) n FROM focus_sessions').get(),
+    ).toEqual({ n: 0 });
+  });
+
   it('completes once across different operation ids and persists locked receipts', () => {
     prepareDaily();
     const p = processor();
