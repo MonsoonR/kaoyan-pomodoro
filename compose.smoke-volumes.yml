@@ -1,0 +1,49 @@
+services:
+  caddy:
+    volumes: !override
+      - ./Caddyfile.test:/etc/caddy/Caddyfile:ro
+      - smoke-caddy-data:/data
+      - smoke-caddy-config:/config
+  api:
+    volumes: !override
+      - smoke-data:/var/lib/kaoyan
+  backup:
+    volumes: !override
+      - smoke-data:/var/lib/kaoyan
+      - smoke-backups:/backups
+  smoke-volume-init:
+    image: kaoyan-pomodoro-backup:${IMAGE_TAG:-local}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        chown 10001:10001 /init/data /init/backups
+        chmod 0750 /init/data /init/backups
+        touch /init/caddy-data/.smoke-initialized /init/caddy-config/.smoke-initialized
+        chown 1000:1000 /init/caddy-data /init/caddy-config /init/caddy-data/.smoke-initialized /init/caddy-config/.smoke-initialized
+        chmod 0750 /init/caddy-data /init/caddy-config
+        chmod 0600 /init/caddy-data/.smoke-initialized /init/caddy-config/.smoke-initialized
+    volumes:
+      - smoke-data:/init/data
+      - smoke-backups:/init/backups
+      - smoke-caddy-data:/init/caddy-data
+      - smoke-caddy-config:/init/caddy-config
+    read_only: true
+    restart: "no"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    profiles:
+      - smoke-init
+
+volumes:
+  smoke-data:
+  smoke-backups:
+  smoke-caddy-data:
+  smoke-caddy-config:

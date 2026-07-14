@@ -117,3 +117,15 @@ docker compose down
 ## 本地生产烟雾测试
 
 `bash scripts/smoke-test.sh` 使用随机 Compose project、临时持久目录、真实三张生产镜像、真实 Fastify/SQLite/Caddy internal CA 与 HTTPS。它验证端口隔离、非 root UID、安全头和 Cookie、API no-store、hash 静态资源 immutable、index/sw 更新缓存策略、账号 CLI、同步写入、0750 目录下的普通用户文件名恢复、在线备份、maintenance/backup 锁、readiness 与 migration 失败、完整恢复、恢复及回滚后 backup healthy、容器重建持久化、失败恢复自动回滚、29/30/31 天保留边界以及日志不包含测试密码/session token；无论成功失败都会清理。
+
+存储模式默认为 `SMOKE_STORAGE_MODE=auto`：Git Bash/MSYS、Windows/WSL 环境选择 `volume`，原生 Linux 选择 `bind`，也可以显式指定：
+
+```bash
+# Linux/Debian：验证正式宿主机 bind mount 的 UID/GID 和 mode
+SMOKE_STORAGE_MODE=bind bash scripts/smoke-test.sh
+
+# Windows Docker Desktop：使用具备完整 Unix 权限语义的 Docker named volumes
+SMOKE_STORAGE_MODE=volume bash scripts/smoke-test.sh
+```
+
+`volume` 模式避免 Windows bind mount 对 `chmod 0600` 支持不一致，同时仍使用相同的生产镜像、Fastify、SQLite、Caddy、backup 和 restore 脚本；测试专用的一次性 root 容器只负责把 named volumes 初始化为生产 UID/GID 和 `0750`，长期服务仍以非 root 运行。`bind` 模式才验证正式 Debian 宿主机目录权限，因此 Windows 的 `volume` smoke 不能替代最终 Debian/ext4 bind-mount 验收。

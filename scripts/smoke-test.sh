@@ -5,6 +5,10 @@ trap 'echo "Smoke test command failed at line $LINENO" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
+# shellcheck source=lib/smoke-test-helpers.sh
+source "$ROOT/scripts/lib/smoke-test-helpers.sh"
+storage_mode="$(select_smoke_storage_mode)"
+echo "Docker smoke storage mode: $storage_mode"
 project="kaoyan-smoke-$(date +%s)-$RANDOM"
 scratch="$(mktemp -d "$ROOT/.smoke-XXXXXX")"
 compose_scratch="$scratch"
@@ -26,7 +30,14 @@ export IMAGE_VERSION BUILD_DATE
 password='smoke-only-password-42'
 base="https://localhost:$TEST_HTTPS_PORT"
 
-compose() { MSYS_NO_PATHCONV=1 docker compose -f compose.yml -f compose.test.yml "$@"; }
+compose_files=(compose.yml compose.test.yml)
+if [[ "$storage_mode" == volume ]]; then
+  compose_files+=(compose.smoke-volumes.yml)
+fi
+COMPOSE_PATH_SEPARATOR=':'
+COMPOSE_FILE="$(IFS=:; printf '%s' "${compose_files[*]}")"
+export COMPOSE_FILE COMPOSE_PATH_SEPARATOR
+compose() { MSYS_NO_PATHCONV=1 docker compose "$@"; }
 wait_healthy() {
   local service="$1" state=""
   for _ in {1..45}; do
@@ -40,7 +51,14 @@ wait_healthy() {
 cleanup() {
   status=$?
   if (( status != 0 )); then
+    echo "Docker smoke storage mode: $storage_mode" >&2
     compose ps >&2 || true
+    backup_id="$(compose ps -q backup 2>/dev/null || true)"
+    if [[ -n "$backup_id" ]]; then
+      docker inspect --format 'backup status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$backup_id" >&2 || true
+      docker inspect --format '{{range .Mounts}}backup mount {{.Destination}} <- {{.Type}}:{{.Source}}{{println}}{{end}}' "$backup_id" >&2 || true
+    fi
+    compose logs --no-color --tail=100 backup >&2 || true
     compose logs --no-color --tail=200 >&2 || true
   fi
   compose down --remove-orphans --volumes >/dev/null 2>&1 || true
@@ -48,22 +66,27 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT HUP INT TERM
-mkdir -p "$data_host" "$backup_host" "$caddy_data_host" "$caddy_config_host"
-chmod 0770 "$data_host" "$backup_host"
-chmod 0770 "$caddy_data_host" "$caddy_config_host"
-if command -v chown >/dev/null; then
-  chown 10001:10001 "$data_host" "$backup_host" 2>/dev/null || chmod 0777 "$data_host" "$backup_host"
-  chown 1000:1000 "$caddy_data_host" "$caddy_config_host" 2>/dev/null || chmod 0777 "$caddy_data_host" "$caddy_config_host"
+if [[ "$storage_mode" == bind ]]; then
+  mkdir -p "$data_host" "$backup_host" "$caddy_data_host" "$caddy_config_host"
+  chown 10001:10001 "$data_host" "$backup_host" || { echo 'Bind mode requires permission to chown data and backups to 10001:10001' >&2; exit 77; }
+  chmod 0750 "$data_host" "$backup_host"
+  chown 1000:1000 "$caddy_data_host" "$caddy_config_host" || { echo 'Bind mode requires permission to chown Caddy storage to 1000:1000' >&2; exit 77; }
+  chmod 0750 "$caddy_data_host" "$caddy_config_host"
+  test "$(stat -c '%u:%g %a' "$data_host")" = '10001:10001 750'
+  test "$(stat -c '%u:%g %a' "$backup_host")" = '10001:10001 750'
+  test "$(stat -c '%u:%g %a' "$caddy_data_host")" = '1000:1000 750'
+  test "$(stat -c '%u:%g %a' "$caddy_config_host")" = '1000:1000 750'
 fi
 
 bash scripts/tests/maintenance.test.sh
+bash scripts/tests/smoke-test.test.sh
 compose config --quiet
 compose build
+if [[ "$storage_mode" == volume ]]; then
+  compose run --rm --no-deps smoke-volume-init
+fi
 compose up -d
-for _ in {1..60}; do
-  if curl -kfsS "$base/api/health/ready" >/dev/null 2>&1; then break; fi
-  sleep 2
-done
+wait_for_initial_services
 curl -kfsS "$base/api/health/live" | grep -q '"status":"ok"'
 curl -ksS -D "$scratch/api-headers" -o /dev/null "$base/api"
 grep -qi '^cache-control: no-store' "$scratch/api-headers"
@@ -90,6 +113,10 @@ done
 test "$(compose exec -T web id -u)" != 0
 test "$(compose exec -T api id -u)" != 0
 test "$(compose exec -T backup id -u)" != 0
+compose run --rm --no-deps backup sh -c 'test "$(stat -c "%u:%g %a" /var/lib/kaoyan)" = "10001:10001 750"; test "$(stat -c "%u:%g %a" /backups)" = "10001:10001 750"'
+if [[ "$storage_mode" == volume ]]; then
+  compose run --rm --no-deps --entrypoint sh caddy -c 'test "$(stat -c "%u:%g %a" /data)" = "1000:1000 750"; test "$(stat -c "%u:%g %a" /config)" = "1000:1000 750"'
+fi
 
 printf '{"username":"learner","password":"%s","confirmPassword":"%s"}' "$password" "$password" |
   compose run --rm -T --no-deps -e KAOYAN_ACCOUNT_STDIN=1 api node dist/cli/account.js init
@@ -162,10 +189,11 @@ curl -kfsS -b "$cookie" -H "Origin: $base" -H 'Content-Type: application/json' \
 grep -q '"taskTitle":"smoke-daily"' "$scratch/timer-exit.json"
 download_and_validate_export initial
 
-backup_path="$(compose run --rm --no-deps backup /app/scripts/backup.sh manual | tail -n 1)"
+backup_path="$(SMOKE_DIAGNOSTIC_DIR="$scratch" run_manual_backup_with_retry)"
 backup_name="$(basename "$backup_path")"
 compose run --rm --no-deps backup /app/scripts/validate-backup.sh "/backups/$backup_name"
-if [[ "$(stat -c %u "$backup_host" 2>/dev/null || true)" == 10001 && "$(id -u)" != 0 ]]; then
+compose run --rm --no-deps backup sh -c 'test "$(stat -c %a "$1")" = 600; test "$(stat -c %u:%g "$1")" = 10001:10001' _ "/backups/$backup_name"
+if [[ "$storage_mode" == bind && "$(stat -c %u "$backup_host" 2>/dev/null || true)" == 10001 && "$(id -u)" != 0 ]]; then
   ! test -r "$backup_host/$backup_name"
 fi
 
