@@ -14,6 +14,7 @@ import {
   Settings as SettingsIcon,
   Sprout,
   Trash2,
+  UserPlus,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Progress, SubjectBadge, TaskForm, TaskRow } from './components.jsx';
@@ -23,6 +24,7 @@ import { ConflictCenter } from './features/conflicts/ConflictCenter';
 import { useReplicaData } from './features/replicas/use-replica-data';
 import { SyncStatusPanel } from './features/sync/SyncStatusPanel';
 import { TimerPage } from './features/timer/TimerPage';
+import { InvitationManagement } from './features/admin/InvitationManagement';
 import { useTimerState } from './features/timer/use-timer-state';
 import {
   DEFAULT_SETTINGS,
@@ -36,7 +38,7 @@ import {
 } from './model.js';
 import { RuntimeProvider, useRuntime, useRuntimeSnapshot } from './runtime/runtime-context';
 
-type Route = 'home' | 'today' | 'library' | 'records' | 'settings' | `focus/${string}`;
+type Route = 'home' | 'today' | 'library' | 'records' | 'settings' | 'invites' | `focus/${string}`;
 type TaskEditor = { kind: 'task' | 'daily'; item: Task | DailyTask | null } | null;
 
 const NAV = [
@@ -46,6 +48,8 @@ const NAV = [
   ['records', '专注记录', Clock3],
   ['settings', '设置', SettingsIcon],
 ] as const;
+
+const ADMIN_NAV = ['invites', '邀请管理', UserPlus] as const;
 
 function currentRoute(): Route {
   return (globalThis.location?.hash?.replace(/^#\/?/, '') || 'home') as Route;
@@ -91,23 +95,25 @@ function TimerEntry({ timerState, onOpen }: {
   </section>;
 }
 
-function Shell({ route, go, sync, children }: {
+function Shell({ route, go, sync, isAdmin, children }: {
   route: Route;
   go: (route: Route) => void;
   sync: React.ReactNode;
+  isAdmin: boolean;
   children: React.ReactNode;
 }) {
+  const navigation = isAdmin ? [...NAV, ADMIN_NAV] : NAV;
   return <div className="app-shell">
     <aside className="sidebar">
       <button className="brand" type="button" onClick={() => go('home')} aria-label="返回首页">
         <span className="brand__mark">♧</span><span><strong>考研番茄钟</strong><small>Focus · Plan · Achieve</small></span>
       </button>
-      <nav className="side-nav" aria-label="主要导航">{NAV.map(([key, label, Icon]) => <button key={key} className={route === key ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+      <nav className="side-nav" aria-label="主要导航">{navigation.map(([key, label, Icon]) => <button key={key} className={route === key ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
       <div className="sidebar-sync">{sync}</div>
       <div className="side-note"><small>今天只做一件事</small><strong>完成下一个专注</strong></div>
     </aside>
     <main className="app-main"><div className="mobile-sync">{sync}</div>{children}</main>
-    <nav className="bottom-nav" aria-label="手机导航">{NAV.map(([key, label, Icon]) => <button key={key} className={route === key ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+    <nav className="bottom-nav" aria-label="手机导航">{navigation.map(([key, label, Icon]) => <button key={key} className={route === key ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
   </div>;
 }
 
@@ -139,10 +145,10 @@ function SettingsPage({ settings, settingsId, conflicts, onSave, toast }: {
   };
   const change = (key: keyof typeof draft, value: unknown) => setDraft((current) => ({ ...current, [key]: value }));
   return <section className="page">
-    <PageHeader title="设置" description="计时偏好会保存到同步副本，并在登录设备间保持一致。" />
+    <PageHeader title="设置" description="按自己的节奏调整专注、休息和提醒。" />
     <form className="settings-grid" onSubmit={submit}>
       <section className="settings-card">
-        <div className="settings-card__title"><div><h2>计时规则</h2><p>设置更新会先在本机生效，再自动同步。</p></div><SettingsIcon /></div>
+        <div className="settings-card__title"><div><h2>计时规则</h2><p>修改后会自动保存，并在其他设备上保持一致。</p></div><SettingsIcon /></div>
         <label className="field field--full"><span>默认计时模式</span><select value={draft.defaultPreset} onChange={(event) => change('defaultPreset', event.target.value)}>{Object.entries(PRESETS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
         <div className="form-grid">
           <label className="field"><span>专注分钟</span><input type="number" min="1" max="180" value={draft.customFocusMinutes} onChange={(event) => change('customFocusMinutes', event.target.value)} /></label>
@@ -152,7 +158,7 @@ function SettingsPage({ settings, settingsId, conflicts, onSave, toast }: {
         </div>
       </section>
       <section className="settings-card">
-        <div className="settings-card__title"><div><h2>提醒</h2><p>权限由当前浏览器管理，偏好会同步。</p></div><Focus /></div>
+        <div className="settings-card__title"><div><h2>提醒</h2><p>选择计时结束时希望收到的提醒。</p></div><Focus /></div>
         <label className="toggle"><span><span><strong>完成提示音</strong><small>计时结束时播放简短提示</small></span></span><input type="checkbox" checked={draft.soundEnabled} onChange={(event) => change('soundEnabled', event.target.checked)} /></label>
         <label className="toggle"><span><span><strong>桌面通知</strong><small>离开标签页时也能收到提醒</small></span></span><input type="checkbox" checked={draft.notificationsEnabled} onChange={(event) => change('notificationsEnabled', event.target.checked)} /></label>
       </section>
@@ -196,7 +202,7 @@ function AppContent() {
   };
 
   const saveTask = async (input: { title: string; subject: string; target: number; preset: '25-5' | '50-10' | 'custom' }) => {
-    if (!queue || !editor) throw new Error('本地同步队列尚未准备好');
+    if (!queue || !editor) throw new Error('暂时无法保存，请稍后再试');
     const value = validateTaskInput(input);
     if (editor.kind === 'task') {
       if (editor.item) await queue.updateTask(editor.item.id, { title: value.title, subject: value.subject, defaultPomodoroTarget: value.target, defaultTimerPreset: value.preset });
@@ -248,7 +254,7 @@ function AppContent() {
         crypto.randomUUID(), task.id, 'focus', durations.focus,
       );
       go(`focus/${task.id}`);
-    }, '专注计时器已加入同步队列');
+    }, '专注已开始');
   };
 
   useEffect(() => {
@@ -263,24 +269,24 @@ function AppContent() {
     );
   }, [go, route, timerState.viewModel.reconciliation?.errorCode, toast, visibleTimer]);
 
-  if (!data.loaded) return <main className="login-page"><p role="status">正在读取本地同步副本…</p></main>;
+  if (!data.loaded) return <main className="login-page"><p role="status">正在准备你的学习计划…</p></main>;
   const sync = <SyncStatusPanel pendingCount={data.pendingCount} rejectedCount={data.rejectedCount} conflictCount={data.openConflictCount} syncIssues={data.syncIssues} />;
   const settings = data.settings as Settings | null;
   const activeTasks = data.tasks.filter((task) => !task.archived);
   let page: React.ReactNode;
 
   if (route === 'today') page = <section className="page">
-    <PageHeader title="今日任务" description="只安排今天能完成的内容，操作会先写入本地队列。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加今日任务</button>} />
+    <PageHeader title="今日任务" description="选好今天要做的事，然后一项一项完成。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加今日任务</button>} />
     <section className="panel"><div className="section-title"><div><h2>今天的计划</h2><p>{todayTasks.length} 项任务 · 已完成 {summary.completed} 项</p></div></div>
       {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
       {todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} onEdit={(item: DailyTask) => setEditor({ kind: 'daily', item })} onDelete={deleteDaily} onMove={moveDaily} />)}</div> : <Empty title="今天还没有任务" text="临时添加一个，或从长期任务库选择。" />}
     </section>
-    <section className="panel library-picker"><div className="section-title"><div><h2>从任务库添加</h2><p>加入今日时，来源版本由离线队列预测。</p></div><button className="text-link text-link--green" type="button" onClick={() => go('library')}>管理任务库<ArrowRight size={15} /></button></div>
+    <section className="panel library-picker"><div className="section-title"><div><h2>从任务库添加</h2><p>把长期任务安排到今天，原任务仍会保留。</p></div><button className="text-link text-link--green" type="button" onClick={() => go('library')}>管理任务库<ArrowRight size={15} /></button></div>
       <div className="template-list">{activeTasks.map((task) => <article className="template-row" key={task.id}><div><SubjectBadge subject={task.subject} /><strong>{task.title}</strong><span>{task.defaultPomodoroTarget} 个番茄 · {PRESETS[task.defaultTimerPreset]}</span></div><button className="button button--outline button--small" type="button" onClick={() => addToday(task)}><Plus size={15} />加入今天</button></article>)}</div>
     </section>
   </section>;
   else if (route === 'library') page = <section className="page">
-    <PageHeader title="任务库" description="长期任务来自 IndexedDB 投影，离线编辑也会立即显示。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'task', item: null })}><Plus size={17} />新建长期任务</button>} />
+    <PageHeader title="任务库" description="把需要长期推进的复习任务放在这里，随时安排到今天。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'task', item: null })}><Plus size={17} />新建长期任务</button>} />
     <section className="panel"><div className="section-title"><div><h2>长期任务</h2><p>{activeTasks.length} 项正在使用</p></div></div>
       {data.tasks.length ? <div className="template-grid">{data.tasks.map((task) => <article className={`template-card ${task.archived ? 'template-card--archived' : ''}`} key={task.id}><div className="template-card__top"><SubjectBadge subject={task.subject} /><BookOpen size={19} /></div><h3>{task.title}</h3><p>{task.defaultPomodoroTarget} 个番茄 · {PRESETS[task.defaultTimerPreset]}</p><div className="template-card__actions">
         {!task.archived ? <button className="button button--primary button--small" type="button" onClick={() => addToday(task)}><Plus size={15} />加入今天</button> : null}
@@ -292,11 +298,12 @@ function AppContent() {
   </section>;
   else if (route === 'records') {
     const sessions = data.focusSessions.filter((session) => getIsoDateKey(session.startedAt) === today);
-    page = <section className="page"><PageHeader title="专注记录" description="记录由服务器计时器生成；本页只读，不会创建 focusSession 操作。" />
+    page = <section className="page"><PageHeader title="专注记录" description="回顾每一次专注，看看今天把时间花在了哪里。" />
       <div className="record-summary"><div><Clock3 /><span>专注时长</span><strong>{formatDuration(summary.focusSeconds)}</strong></div><div><Focus /><span>完整番茄</span><strong>{summary.pomodoros} 个</strong></div></div>
-      <section className="panel"><div className="section-title"><div><h2>今日时间线</h2><p>{sessions.length} 条记录</p></div></div>{sessions.length ? <div className="record-list">{sessions.map((session) => <article className="record-row" key={session.id}><i className={`record-icon record-icon--${session.result}`}><Clock3 size={18} /></i><div className="record-row__main"><div><strong>{session.result === 'completed' ? '完成专注' : session.result === 'interrupted' ? '专注中断' : '提前结束'}</strong><SubjectBadge subject={session.subject} /></div><h3>{session.taskTitle}</h3>{session.interruptionReason ? <p>原因：{session.interruptionReason}</p> : null}</div><div className="record-row__time"><strong>{formatDuration(session.effectiveSeconds)}</strong><span>{formatTime(session.startedAt)}–{formatTime(session.endedAt)}</span></div></article>)}</div> : <Empty title="今天还没有专注记录" text="完成服务器计时器后，记录会随增量同步出现。" />}</section>
+      <section className="panel"><div className="section-title"><div><h2>今日时间线</h2><p>{sessions.length} 条记录</p></div></div>{sessions.length ? <div className="record-list">{sessions.map((session) => <article className="record-row" key={session.id}><i className={`record-icon record-icon--${session.result}`}><Clock3 size={18} /></i><div className="record-row__main"><div><strong>{session.result === 'completed' ? '完成专注' : session.result === 'interrupted' ? '专注中断' : '提前结束'}</strong><SubjectBadge subject={session.subject} /></div><h3>{session.taskTitle}</h3>{session.interruptionReason ? <p>原因：{session.interruptionReason}</p> : null}</div><div className="record-row__time"><strong>{formatDuration(session.effectiveSeconds)}</strong><span>{formatTime(session.startedAt)}–{formatTime(session.endedAt)}</span></div></article>)}</div> : <Empty title="今天还没有专注记录" text="完成一次专注后，记录会出现在这里。" />}</section>
     </section>;
-  } else if (route === 'settings') page = <SettingsPage settings={settings} settingsId={settings?.id ?? null} conflicts={data.conflicts} toast={toast} onSave={(id, patch) => queue ? run(() => queue.updateSettings(id, patch), '设置已保存') : Promise.reject(new Error('同步队列未准备好'))} />;
+  } else if (route === 'settings') page = <SettingsPage settings={settings} settingsId={settings?.id ?? null} conflicts={data.conflicts} toast={toast} onSave={(id, patch) => queue ? run(() => queue.updateSettings(id, patch), '设置已保存') : Promise.reject(new Error('暂时无法保存，请稍后再试'))} />;
+  else if (route === 'invites' && runtime.getSnapshot().session?.user.role === 'admin') page = <InvitationManagement />;
   else if (route.startsWith('focus/')) {
     const routeTask = data.dailyTasks.find((value) => value.id === route.split('/')[1]) ?? null;
     const timerTask = visibleTimer
@@ -330,7 +337,7 @@ function AppContent() {
       onConfirmTask={() => task
         ? run(() => queue.completeDailyTask(task.id), '今日任务已确认完成')
         : Promise.reject(new Error('今日任务不可用'))}
-    /> : <main className="focus-page"><p role="status">计时器队列正在准备…</p></main>;
+    /> : <main className="focus-page"><p role="status">正在准备专注计时…</p></main>;
   } else page = <section className="dashboard">
     <header className="hero"><div><div className="date-line"><CalendarDays size={16} />{new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())}</div><h1>今天也稳稳推进。</h1><p>{authMode === 'offline' ? '当前离线，本机操作会保留并在联网后同步。' : '先完成眼前这一项，不需要一次想完所有事情。'}</p></div><div className="hero__actions"><button className="button button--ghost" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加任务</button><button className="button button--primary" type="button" onClick={() => go('today')}><ListTodo size={17} />安排今日任务</button></div></header>
     <div className="summary-grid"><article className="summary-card"><div className="summary-card__title"><span>今日任务进度</span><i><Sprout /></i></div><div className="summary-number"><strong>{summary.completed} / {summary.total}</strong><span>项已完成</span></div><Progress value={summary.completed} max={summary.total} label="今日任务完成进度" /></article><article className="summary-card"><div className="summary-card__title"><span>今日专注时长</span><i><Clock3 /></i></div><div className="summary-number"><strong>{formatDuration(summary.focusSeconds)}</strong></div><p className="summary-note"><Focus size={16} />完成番茄 {summary.pomodoros} 个</p></article></div>
@@ -339,7 +346,7 @@ function AppContent() {
   </section>;
 
   return <>
-    {route.startsWith('focus/') ? page : <Shell route={route} go={go} sync={sync}>{page}</Shell>}
+    {route.startsWith('focus/') ? page : <Shell route={route} go={go} sync={sync} isAdmin={runtime.getSnapshot().session?.user.role === 'admin'}>{page}</Shell>}
     <Modal open={Boolean(editor)} title={editor?.item ? '编辑任务' : editor?.kind === 'task' ? '新建长期任务' : '添加今日任务'} onClose={() => setEditor(null)}>
       <TaskForm kind={editor?.kind === 'task' ? 'template' : 'daily'} initial={editor?.item} defaultPreset={settings?.defaultPreset ?? DEFAULT_SETTINGS.defaultPreset} onCancel={() => setEditor(null)} onSave={saveTask} />
     </Modal>

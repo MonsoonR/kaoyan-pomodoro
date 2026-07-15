@@ -1,6 +1,6 @@
 # 考研番茄钟
 
-一个面向考研复习的本地网页应用，把“长期任务库、今日待办、番茄专注、完成确认、每日复盘”串成一个简单闭环。
+一个支持离线使用和多设备同步的考研复习网页应用，把“长期任务库、今日待办、番茄专注、完成确认、每日复盘”串成一个简单闭环。
 
 ## 功能
 
@@ -11,67 +11,64 @@
 - 完成确认：达到预计番茄数后，确认打钩、追加番茄或暂不完成
 - 今日概览：任务完成数、专注时长、完整番茄和中断次数
 - 异常恢复：网页关闭或电脑休眠后，可按计划完成、重新开始或记为中断
-- 本地数据：无需账号，支持 JSON 导出、导入和清空
+- 邀请注册：管理员创建一次性邀请链接，不开放公开注册
+- 多用户隔离：任务、计时、设置、统计、同步、冲突、设备和会话按账号隔离
+- 离线可用：登录后的数据保存在当前账号的浏览器副本中，联网后继续同步
 - 响应式界面：支持桌面和手机浏览器
 
 ## 运行源码
 
-推荐安装 Node.js 20 或更新版本。
+需要 Node.js 22 和 pnpm 10。
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
-浏览器打开终端中显示的地址。数据只保存在当前浏览器中。
-
-Windows 用户也可以双击 `start-windows.bat`。
+浏览器打开终端中显示的地址。完整自托管环境还需要 API、SQLite 和 `APP_ORIGIN`，见部署文档。
 
 ## 生产构建
 
 ```bash
-npm run build
-npm run preview
+pnpm build
+pnpm --filter @kaoyan/web preview
 ```
 
-构建产物在 `dist/`。部署到任意静态网站服务即可。
+Web 与 API 分别构建；同步版不能只部署静态文件。
 
 ## 测试
 
 ```bash
-npm test
-npm run build
-npm run test:e2e
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:e2e
 ```
 
 端到端测试使用 Playwright Chromium。普通开发环境首次运行前，可执行：
 
 ```bash
-npx playwright install chromium
+pnpm exec playwright install chromium
 ```
 
 ## 项目结构
 
-- `src/model.js`：数据结构、计时运算、汇总和持久化
-- `src/components.jsx`：通用对话框、任务表单和任务行
-- `src/App.jsx`：页面、业务流程和状态管理
-- `src/styles.css`：桌面和手机响应式视觉
-- `tests/model.test.js`：核心规则测试
-- `tests/e2e/`：完整学习流程与视觉验收
-
-## 部署到 GitHub Pages
-
-项目已经包含 `.github/workflows/deploy.yml`，推送到 GitHub 后可自动构建和发布。
-
-1. 在 GitHub 创建一个新仓库，例如 `kaoyan-pomodoro`。
-2. 将本项目全部文件推送到仓库的 `main` 分支。
-3. 打开仓库的 **Settings → Pages**。
-4. 在 **Build and deployment → Source** 中选择 **GitHub Actions**。
-5. 打开 **Actions** 页面查看 `Deploy to GitHub Pages` 工作流；部署完成后，访问地址通常是：
-   `https://你的用户名.github.io/仓库名/`
-
-以后每次推送到 `main`，GitHub Pages 都会自动重新部署。项目数据保存在访问者自己的浏览器中，不会上传到仓库。
+- `apps/api`：认证、邀请码、业务 API、同步服务与 SQLite 迁移
+- `apps/web`：React PWA、IndexedDB 离线副本与同步客户端
+- `packages/contracts`：前后端共享的请求、响应与数据校验
+- `scripts`：Kubernetes 生产更新与显式恢复、本地/遗留 Compose 维护和容器集成测试
 
 ## 自托管同步版
 
-生产自托管、HTTPS、PWA、备份与恢复说明见 [部署文档](docs/deployment.md)。
+当前生产环境运行在 Kubernetes，更新入口为 `scripts/update.sh`（默认仅 Plan，只有显式 `--execute` 才变更集群）。Kubernetes 拓扑、镜像约束、短维护窗口、备份与失败边界见 [部署文档](docs/deployment.md)；从旧单账号数据库升级前，必须先阅读 [多用户迁移 Runbook](docs/multi-user-migration-runbook.md)。
+
+`compose.yml` 与 Caddy 配置继续用于本地容器集成测试和已停止旧服务器的短期回滚参考，不是当前生产更新方式。
+
+初始化得到的原始账号是管理员。管理员登录后可在“邀请管理”创建一次性链接。按用户名安全重置密码：
+
+```bash
+pnpm admin:reset-password --username <username>
+```
+
+密码会在终端中隐藏输入两次；命令不会接受密码参数，完成后该用户的已有会话全部失效，并要求下次登录后修改密码。

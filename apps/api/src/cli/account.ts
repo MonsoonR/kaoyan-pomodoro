@@ -11,15 +11,22 @@ import { promptHidden } from './prompt-password';
 
 type Input = { username: string | undefined; password: string; confirmPassword: string };
 
-async function readInput(command: string): Promise<Input> {
+async function readInput(
+  command: string,
+  resetUsername?: string,
+): Promise<Input> {
   if (process.env.KAOYAN_ACCOUNT_STDIN === '1') {
     const parsed = JSON.parse(readFileSync(0, 'utf8')) as Partial<Input>;
     if (typeof parsed.password !== 'string' || typeof parsed.confirmPassword !== 'string' ||
         (command === 'init' && typeof parsed.username !== 'string'))
       throw new Error('Invalid account input from stdin');
-    return { username: parsed.username, password: parsed.password, confirmPassword: parsed.confirmPassword } as Input;
+    return {
+      username: command === 'reset-password' ? resetUsername : parsed.username,
+      password: parsed.password,
+      confirmPassword: parsed.confirmPassword,
+    } as Input;
   }
-  let username: string | undefined;
+  let username: string | undefined = resetUsername;
   if (command === 'init') {
     const readline = createInterface({ input: stdin, output: stdout });
     try { username = await readline.question('Username: '); }
@@ -32,13 +39,20 @@ async function readInput(command: string): Promise<Input> {
 
 async function main() {
   const command = process.argv[2];
-  if (process.argv.length > 3)
-    throw new Error('Passwords and account data must not be passed as command arguments');
   if (command !== 'init' && command !== 'reset-password')
     throw new Error('Use init or reset-password');
+  const extra = process.argv.slice(3);
+  let resetUsername: string | undefined;
+  if (command === 'init' && extra.length !== 0)
+    throw new Error('Account data must not be passed as command arguments');
+  if (command === 'reset-password') {
+    if (extra.length !== 2 || extra[0] !== '--username' || !extra[1])
+      throw new Error('Use reset-password --username <username>');
+    resetUsername = extra[1];
+  }
   const path = process.env.DATABASE_PATH;
   if (!path) throw new Error('DATABASE_PATH is required');
-  const input = await readInput(command);
+  const input = await readInput(command, resetUsername);
   const connection = openDatabase(resolveDatabaseSource(path));
   try {
     migrateDatabase(connection.db);
@@ -51,6 +65,7 @@ async function main() {
     } else {
       await resetAccountPassword(
         connection.sqlite,
+        input.username ?? '',
         input.password,
         input.confirmPassword,
       );

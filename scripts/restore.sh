@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
+# Legacy Docker Compose restore only. Kubernetes production restore is always a separate,
+# explicitly reviewed operation and is never invoked by k8s-update.sh.
 # shellcheck disable=SC2016 # sqlite expressions expand inside the backup container.
 set -Eeuo pipefail
+
+if [[ "${1:-}" != "--legacy-compose" ]]; then
+  cat >&2 <<'EOF'
+This restore script controls only the stopped legacy Docker Compose environment.
+It is not a Kubernetes production rollback command.
+
+Usage: ./scripts/restore.sh --legacy-compose kaoyan-...sqlite.gz
+EOF
+  exit 64
+fi
+shift
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 exec 9>"$ROOT/.maintenance.lock"
 flock -n 9 || { echo "Another restore or update is already running" >&2; exit 75; }
 
-requested="${1:?Usage: ./scripts/restore.sh kaoyan-...sqlite.gz}"
+requested="${1:?Usage: ./scripts/restore.sh --legacy-compose kaoyan-...sqlite.gz}"
 case "$requested" in
   backups/*) name="${requested#backups/}" ;;
   */*|*\\*|*..*) echo "Restore accepts only a backup filename or backups/<filename>" >&2; exit 64 ;;
@@ -85,7 +98,8 @@ compose run --rm --no-deps backup /app/scripts/restore-db.sh "/backups/$name"
 compose up -d api
 wait_ready
 compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "PRAGMA integrity_check;")" = ok'
-compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM users;")" -eq 1'
+compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM users WHERE role = char(97,100,109,105,110) AND status = char(97,99,116,105,118,101);")" -ge 1'
+compose run --rm --no-deps backup sh -c 'test -z "$(sqlite3 "$DATABASE_PATH" "PRAGMA foreign_key_check;")"'
 restore_backup_service
 trap - EXIT
 echo "Restore completed from $name (rollback point: $pre_name)"

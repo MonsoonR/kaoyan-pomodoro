@@ -10,10 +10,14 @@ import {
 import { parseDevice } from './device';
 import { hashPassword, type PasswordOptions, verifyPassword } from './password';
 import { hashSessionToken } from './tokens';
+import { normalizeUsername } from './username';
 
 interface UserRow {
   id: string;
   username: string;
+  role: 'admin' | 'user';
+  status: 'active' | 'disabled';
+  must_change_password: number;
   password_hash: string;
   failed_login_count: number;
   locked_until: number | null;
@@ -26,6 +30,8 @@ export interface AuthenticatedSession {
   expires_at: number;
   last_seen_at: number;
   username: string;
+  role: 'admin' | 'user';
+  must_change_password: number;
   device_name: string;
 }
 
@@ -44,6 +50,48 @@ export interface Services {
   passwordOptions: PasswordOptions;
   dummyPasswordHash: string;
   verifyPassword: typeof verifyPassword;
+  appOrigin: string;
+}
+
+export function createSessionRecords(
+  services: Services,
+  user: Pick<UserRow, 'id' | 'username' | 'role' | 'must_change_password'>,
+  userAgent: string,
+  now: number,
+) {
+  const device = parseDevice(userAgent);
+  const deviceId = randomUUID();
+  const sessionId = randomUUID();
+  const token = services.token();
+  const expiresAt = now + SESSION_MAX_AGE_SECONDS * 1000;
+  services.sqlite.prepare(`
+    INSERT INTO devices (
+      id, user_id, name, browser, operating_system,
+      last_active_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    deviceId, user.id, device.name, device.browser, device.operatingSystem,
+    now, now, now,
+  );
+  services.sqlite.prepare(`
+    INSERT INTO sessions (
+      id, user_id, device_id, token_hash, expires_at, last_seen_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    sessionId, user.id, deviceId, hashSessionToken(token), expiresAt, now, now,
+  );
+  return {
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      mustChangePassword: Boolean(user.must_change_password),
+    },
+    deviceId,
+    deviceName: device.name,
+    expiresAt: new Date(expiresAt),
+  };
 }
 
 function recordFailedLogin(services: Services, userId: string, now: number) {
@@ -80,12 +128,13 @@ export async function login(
   const user = services.sqlite
     .prepare(
       `
-    SELECT id, username, password_hash, failed_login_count, locked_until
+    SELECT id, username, password_hash, role, status, must_change_password,
+      failed_login_count, locked_until
     FROM users
-    WHERE username = ?
+    WHERE normalized_username = ?
   `,
     )
-    .get(username) as UserRow | undefined;
+    .get(normalizeUsername(username)) as UserRow | undefined;
 
   const passwordHash = user?.password_hash ?? services.dummyPasswordHash;
   const passwordIsValid = await services.verifyPassword(passwordHash, password);
@@ -94,55 +143,15 @@ export async function login(
     user?.locked_until !== undefined &&
     user.locked_until > now;
 
-  if (!user || isLocked || !passwordIsValid) {
+  if (!user || user.status !== 'active' || isLocked || !passwordIsValid) {
     if (user && !isLocked && !passwordIsValid)
       recordFailedLogin(services, user.id, now);
     throw new AuthFailure('Invalid username or password');
   }
 
-  const device = parseDevice(userAgent);
-  const deviceId = randomUUID();
-  const sessionId = randomUUID();
-  const token = services.token();
-  const expiresAt = now + SESSION_MAX_AGE_SECONDS * 1000;
-
+  let result: ReturnType<typeof createSessionRecords>;
   services.sqlite.transaction(() => {
-    services.sqlite
-      .prepare(
-        `
-      INSERT INTO devices (
-        id, user_id, name, browser, operating_system,
-        last_active_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      )
-      .run(
-        deviceId,
-        user.id,
-        device.name,
-        device.browser,
-        device.operatingSystem,
-        now,
-        now,
-        now,
-      );
-    services.sqlite
-      .prepare(
-        `
-      INSERT INTO sessions (
-        id, user_id, device_id, token_hash, expires_at, last_seen_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-      )
-      .run(
-        sessionId,
-        user.id,
-        deviceId,
-        hashSessionToken(token),
-        expiresAt,
-        now,
-        now,
-      );
+    result = createSessionRecords(services, user, userAgent, now);
     services.sqlite
       .prepare(
         `
@@ -157,13 +166,7 @@ export async function login(
       .run(now, user.id);
   })();
 
-  return {
-    token,
-    user: { id: user.id, username: user.username },
-    deviceId,
-    deviceName: device.name,
-    expiresAt: new Date(expiresAt),
-  };
+  return result!;
 }
 
 export function authenticate(
@@ -182,6 +185,8 @@ export function authenticate(
       sessions.expires_at,
       sessions.last_seen_at,
       users.username,
+      users.role,
+      users.must_change_password,
       devices.name AS device_name
     FROM sessions
     INNER JOIN users ON users.id = sessions.user_id
@@ -189,6 +194,7 @@ export function authenticate(
     WHERE sessions.token_hash = ?
       AND sessions.revoked_at IS NULL
       AND sessions.expires_at > ?
+      AND users.status = 'active'
   `,
     )
     .get(hashSessionToken(token), now) as AuthenticatedSession | undefined;
@@ -232,7 +238,8 @@ export async function changePassword(
       .prepare(
         `
       UPDATE users
-      SET password_hash = ?, password_changed_at = ?, updated_at = ?
+      SET password_hash = ?, password_changed_at = ?, updated_at = ?,
+          must_change_password = false
       WHERE id = ?
     `,
       )

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSyncDatabase, type SyncDatabase } from '../../db/database';
@@ -18,6 +18,8 @@ import { AuthExperience } from './AuthExperience';
 describe('authentication experience', () => {
   const databases: SyncDatabase[] = [];
   afterEach(async () => {
+    cleanup();
+    window.location.hash = '';
     for (const database of databases.splice(0))
       await database.deleteDatabaseForTests();
   });
@@ -32,6 +34,7 @@ describe('authentication experience', () => {
         if (loginError) throw loginError;
         return session();
       }),
+      registerWithInvite: vi.fn(async () => session()),
     };
     const runtime = new AppRuntime({
       database,
@@ -67,6 +70,30 @@ describe('authentication experience', () => {
     await user.click(screen.getByRole('button', { name: '登录' }));
     await waitFor(() => expect(screen.getByText('应用内容')).toBeTruthy());
     expect(api.login).toHaveBeenCalledWith('learner', 'secure password');
+    expect(resumeAfterAuthentication).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await runtime.closed();
+  });
+
+  it('registers from an invite link and never displays the token', async () => {
+    const token = 'A'.repeat(43);
+    window.location.hash = `#/invite/${token}`;
+    const { runtime, api, resumeAfterAuthentication } = setup();
+    const user = userEvent.setup();
+    const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
+    expect(await screen.findByRole('heading', { name: '创建你的学习空间' })).toBeTruthy();
+    expect(document.body.textContent).not.toContain(token);
+    await user.type(screen.getByLabelText('用户名'), 'new-user');
+    await user.type(screen.getByLabelText(/^密码/), 'secure password 123');
+    await user.type(screen.getByLabelText('再次输入密码'), 'secure password 123');
+    await user.click(screen.getByRole('button', { name: '完成注册' }));
+    await waitFor(() => expect(screen.getByText('应用内容')).toBeTruthy());
+    expect(api.registerWithInvite).toHaveBeenCalledWith(
+      token,
+      'new-user',
+      'secure password 123',
+      'secure password 123',
+    );
     expect(resumeAfterAuthentication).toHaveBeenCalledTimes(1);
     view.unmount();
     await runtime.closed();

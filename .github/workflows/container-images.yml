@@ -11,7 +11,44 @@ permissions:
   packages: write
 
 jobs:
+  verify:
+    name: Verify code, migrations and deployment scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test, including Kubernetes update safety tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check Drizzle migrations
+        run: pnpm --filter @kaoyan/api exec drizzle-kit check --config drizzle.config.ts
+
   images:
+    needs: verify
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

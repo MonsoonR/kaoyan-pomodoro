@@ -6,8 +6,9 @@ const root = resolve(import.meta.dirname, '../../..');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
 
 describe('self-hosted deployment configuration', () => {
-  it('publishes ports only from Caddy and bounds every long-running log', () => {
+  it('preserves the Compose integration topology without Kubernetes coupling', () => {
     const compose = read('compose.yml');
+    expect(compose).not.toMatch(/kubectl|kubernetes/i);
     expect(compose).toMatch(/caddy:[\s\S]*ports:[\s\S]*"80:80"[\s\S]*"443:443"/);
     for (const service of ['web', 'api', 'backup']) {
       const section = compose.split(new RegExp(`^ {2}${service}:`, 'm'))[1]
@@ -40,19 +41,44 @@ describe('self-hosted deployment configuration', () => {
     expect(restore).toMatch(/integrity_check/);
   });
 
-  it('makes update readiness failure explicit before enabling edge traffic', () => {
+  it('makes Kubernetes the default update entrypoint and requires explicit execution', () => {
     const update = read('scripts/update.sh');
-    expect(update).toMatch(/wait_ready\(\)/);
-    expect(update).toMatch(/if ! wait_ready/);
-    expect(update.indexOf('if ! wait_ready')).toBeLessThan(
-      update.indexOf('up -d caddy'),
+    const k8sUpdate = read('scripts/k8s-update.sh');
+    expect(update).toContain('scripts/k8s-update.sh');
+    expect(update).not.toMatch(/docker compose/);
+    expect(k8sUpdate).toContain('mode="plan"');
+    expect(k8sUpdate).toMatch(/--execute requires --confirm-context/);
+    expect(k8sUpdate).toMatch(/--migration-check-passed/);
+    expect(k8sUpdate).toMatch(/must not use latest/);
+    expect(k8sUpdate).toMatch(/sha-\(\[0-9a-f\]\{40\}\)@sha256/);
+    expect(k8sUpdate).toMatch(/scale deployment kaoyan-web --replicas=0/);
+    expect(k8sUpdate).toMatch(/scale deployment kaoyan-api --replicas=0/);
+    expect(k8sUpdate.indexOf('scale deployment kaoyan-web --replicas=0')).toBeLessThan(
+      k8sUpdate.indexOf('scale deployment kaoyan-api --replicas=0'),
     );
-    expect(update).toMatch(/Readiness timed out/);
-    expect(update).toMatch(/pre-update/i);
+    expect(k8sUpdate).toMatch(/create job --from=cronjob\/kaoyan-backup/);
+    expect(k8sUpdate).toMatch(/No image rollback, database restore, or down migration was attempted/);
+  });
+
+  it('keeps Kubernetes database restore explicit, stopped, PVC-scoped and non-restarting', () => {
+    const restore = read('scripts/k8s-restore-backup.sh');
+    expect(restore).toContain('mode="plan"');
+    expect(restore).toMatch(/--execute requires --confirm-restore/);
+    expect(restore).toMatch(/API replicas.*"0"/);
+    expect(restore).toMatch(/Web replicas.*"0"/);
+    expect(restore).toContain('claimName: kaoyan-data');
+    expect(restore).toContain('claimName: kaoyan-backups');
+    expect(restore).toContain('deploy.sagirii.me/node-id');
+    expect(restore).toContain('guilyrh');
+    expect(restore).not.toContain('hostPath:');
+    expect(restore).not.toMatch(/k scale deployment/);
+    expect(restore).not.toMatch(/k set image/);
+    expect(restore).toMatch(/PRAGMA integrity_check/);
+    expect(restore).toMatch(/stat -c '%u:%g:%a'/);
   });
 
   it('serializes maintenance and database backup replacement', () => {
-    const update = read('scripts/update.sh');
+    const update = read('scripts/legacy-compose-update.sh');
     const restore = read('scripts/restore.sh');
     const restoreDb = read('docker/backup/scripts/restore-db.sh');
     for (const script of [update, restore]) {

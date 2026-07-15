@@ -4,7 +4,11 @@ import {
   ConflictSchema,
   CurrentSessionSchema,
   DeviceListResponseSchema,
+  CreateInvitationResponseSchema,
+  InvitationListResponseSchema,
+  InvitationSchema,
   LoginResponseSchema,
+  RegisterWithInviteResponseSchema,
   PullChangesResponseSchema,
   PushOperationsResponseSchema,
   ResolveConflictRequestSchema,
@@ -97,6 +101,23 @@ export function createApiClient(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       }, true),
+    registerWithInvite: (
+      token,
+      username,
+      password,
+      confirmPassword,
+      signal,
+    ) => request(
+      '/api/auth/register-with-invite',
+      RegisterWithInviteResponseSchema,
+      {
+        method: 'POST',
+        ...signalInit(signal),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, username, password, confirmPassword }),
+      },
+      true,
+    ),
     getCurrentSession: (signal) =>
       request('/api/auth/me', CurrentSessionSchema, {
         method: 'GET', ...signalInit(signal),
@@ -147,6 +168,28 @@ export function createApiClient(
         method: 'POST', ...signalInit(signal),
         headers: { 'Content-Type': 'application/json' },
       }),
+    listInvitations: async (signal) =>
+      (await request('/api/admin/invites', InvitationListResponseSchema, {
+        method: 'GET', ...signalInit(signal),
+      })).invitations,
+    createInvitation: (expiresInHours, signal) =>
+      request('/api/admin/invites', CreateInvitationResponseSchema, {
+        method: 'POST',
+        ...signalInit(signal),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresInHours }),
+      }),
+    revokeInvitation: (invitationId, signal) =>
+      request(
+        `/api/admin/invites/${encodeURIComponent(invitationId)}/revoke`,
+        InvitationSchema,
+        {
+          method: 'POST',
+          ...signalInit(signal),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        },
+      ),
     resolveConflict: (
       conflictId,
       resolution: ResolveConflictRequest,

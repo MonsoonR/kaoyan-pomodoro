@@ -3,6 +3,8 @@ import {
   CurrentSessionSchema,
   LoginRequestSchema,
   LoginResponseSchema,
+  RegisterWithInviteRequestSchema,
+  RegisterWithInviteResponseSchema,
   SuccessResponseSchema,
 } from '@kaoyan/contracts';
 import type { FastifyInstance } from 'fastify';
@@ -15,6 +17,7 @@ import {
   type Services,
 } from '../auth/session-service';
 import { getAuthenticatedSession, requireAuthentication } from '../auth/auth-hook';
+import { createInvitationService } from '../auth/invitation-service';
 
 export async function authRoutes(
   app: FastifyInstance,
@@ -22,6 +25,7 @@ export async function authRoutes(
   loginRateLimit: { max: number; timeWindow: string | number },
 ) {
   const authGuard = requireAuthentication(services);
+  const invitations = createInvitationService(services);
 
   app.post(
     '/api/auth/login',
@@ -54,10 +58,44 @@ export async function authRoutes(
     },
   );
 
+  app.post(
+    '/api/auth/register-with-invite',
+    { config: { rateLimit: loginRateLimit } },
+    async (request, reply) => {
+      const parsed = RegisterWithInviteRequestSchema.safeParse(request.body);
+      if (!parsed.success && parsed.error.issues.some((issue) =>
+        issue.path[0] === 'password' || issue.path[0] === 'confirmPassword')) {
+        return reply.code(400).send({
+          code: 'PASSWORD_REQUIREMENTS',
+          message: 'Password does not meet requirements',
+        });
+      }
+      if (!parsed.success) throw parsed.error;
+      const body = parsed.data;
+      const result = await invitations.register(
+        body,
+        request.headers['user-agent'] ?? '',
+      );
+      reply.header('Referrer-Policy', 'no-referrer');
+      reply.setCookie(SESSION_COOKIE_NAME, result.token, COOKIE_OPTIONS);
+      return RegisterWithInviteResponseSchema.parse({
+        user: result.user,
+        deviceId: result.deviceId,
+        deviceName: result.deviceName,
+        expiresAt: result.expiresAt.toISOString(),
+      });
+    },
+  );
+
   app.get('/api/auth/me', { preHandler: authGuard }, async (request) => {
     const auth = getAuthenticatedSession(request);
     return CurrentSessionSchema.parse({
-      user: { id: auth.user_id, username: auth.username },
+      user: {
+        id: auth.user_id,
+        username: auth.username,
+        role: auth.role,
+        mustChangePassword: Boolean(auth.must_change_password),
+      },
       deviceId: auth.device_id,
       deviceName: auth.device_name,
       expiresAt: new Date(auth.expires_at).toISOString(),

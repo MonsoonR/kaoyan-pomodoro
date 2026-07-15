@@ -5,6 +5,7 @@ import {
 } from 'drizzle-orm/better-sqlite3';
 
 import { schema } from './schema';
+import { normalizeUsername } from '../auth/username';
 
 export interface DatabaseConnection {
   db: BetterSQLite3Database<typeof schema> & { $client: Database.Database };
@@ -14,6 +15,11 @@ export interface DatabaseConnection {
 
 export function openDatabase(source: string): DatabaseConnection {
   const sqlite = new Database(source);
+  sqlite.function(
+    'normalize_username',
+    { deterministic: true },
+    normalizeUsername,
+  );
   sqlite.pragma('foreign_keys = ON');
   sqlite.pragma('busy_timeout = 5000');
 

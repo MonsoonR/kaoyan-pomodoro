@@ -435,16 +435,16 @@ export class OfflineOperationQueue {
       [this.database.operations, this.database.syncIssues],
       async () => {
         const row = await this.database.operations
-          .where('operationId')
-          .equals(operationId)
+          .where('[userId+operationId]')
+          .equals([this.userId, operationId])
           .first();
         if (!row || row.userId !== this.userId || row.state !== 'rejected' ||
             row.entityType !== 'activeTimer' || row.sequence === undefined)
           throw new Error('Rejected timer operation is not available');
         await this.database.operations.delete(row.sequence);
         await this.database.syncIssues
-          .where('operationId')
-          .equals(operationId)
+          .where('[userId+operationId]')
+          .equals([this.userId, operationId])
           .delete();
       },
     );
@@ -452,8 +452,8 @@ export class OfflineOperationQueue {
 
   async retryTimerOperation(operationId: string): Promise<OperationRow> {
     const original = await this.database.operations
-      .where('operationId')
-      .equals(operationId)
+      .where('[userId+operationId]')
+      .equals([this.userId, operationId])
       .first();
     if (!original || original.userId !== this.userId ||
         original.state !== 'rejected' || original.entityType !== 'activeTimer')

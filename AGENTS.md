@@ -24,12 +24,14 @@
 - `packages/contracts/`：Web 与 API 共享的严格 Zod 合同和 TypeScript 类型。
 - `apps/api/drizzle/`：只追加的版本化 SQLite migration 与 Drizzle 元数据。
 - `docker/backup/`：在线备份、校验、保留和数据库替换脚本。
-- `scripts/`：部署更新、恢复、Docker smoke 及其脚本级回归测试。
-- `compose.yml`、`Caddyfile`：Debian 自托管生产拓扑；`compose.test.yml` 和 `compose.smoke-volumes.yml` 仅用于测试。
+- `scripts/`：Kubernetes 生产更新、遗留 Compose 维护、容器 smoke 及其脚本级回归测试。
+- `scripts/update.sh`：当前生产更新兼容入口，转交 `scripts/k8s-update.sh`；默认 Plan，只有显式 `--execute` 才允许 kubectl 变更。
+- `scripts/k8s-restore-backup.sh`：Kubernetes 数据库恢复辅助；必须保持 API/Web 为 0，且不得自动启动工作负载或切换镜像。
+- `compose.yml`、`Caddyfile`：本地容器集成和已停止旧服务器的短期回滚参考；不是当前生产拓扑。`compose.test.yml` 和 `compose.smoke-volumes.yml` 仅用于测试。
 - `docs/deployment.md`：生产部署、备份和恢复操作；`docs/release-readiness.md`：发布验收摘要。
 - `docs/superpowers/`：批准的设计与实施背景。代码、migration 和测试结果优先于过时说明。
 
-根目录 `README.md` 仍包含早期纯前端版本的部分说明；涉及同步版架构、命令和部署时，不要只依据 README，必须核对 workspace 脚本、当前代码和部署文档。
+生产 Kubernetes 清单位于独立的 `lose-af/losenone-deploy` GitOps 仓库，不属于本仓库。本仓库负责应用代码、镜像构建、更新脚本和应用侧 Runbook；部署仓库负责声明式集群资源。涉及部署时必须分别核对两个仓库的当前分支、工作树和真实实现，不能用一方替代另一方。
 
 ## 开始工作前
 
@@ -44,7 +46,8 @@
 2. 保留用户已有改动。不要 reset、stash、覆盖、格式化或提交与当前任务无关的文件。
 3. 若任务明确指定某个 worktree，就以该 worktree 为项目根目录；否则不要读取或修改 `.worktrees/` 中的其他工作树。
 4. 阅读与任务直接相关的源码、测试、共享合同、migration 和文档，不要默认计划文档已经实现。
-5. 核对工具版本：
+5. 若任务涉及 GitOps 清单，独立确认部署仓库的当前分支和目标 overlay。不要假设应用分支、部署分支和集群正在协调的分支相同，也不要因为本机部署仓库当前 checkout 缺少某个 overlay 就断言远端或集群不存在它。
+6. 核对工具版本：
 
    ```powershell
    node --version
@@ -52,7 +55,8 @@
    ```
 
    Node 必须为 22.x。切换 Node 主版本后若原生依赖出现 ABI 不匹配，应重装或重建依赖，不要把环境错误误判为业务失败。
-6. 目标、验收标准、数据迁移或冲突语义不清晰时，先与用户对齐。若存在更短、更安全的实现路径，应直接说明。
+
+7. 目标、验收标准、数据迁移或冲突语义不清晰时，先与用户对齐。若存在更短、更安全的实现路径，应直接说明。
 
 ## Windows 与命令约束
 
@@ -110,10 +114,15 @@
 
 ### 部署、备份与恢复
 
-- Web、API 和 backup 长期容器保持非 root；API/Web/backup 不发布宿主端口，只有 Caddy 暴露 80/443。
-- 不放宽 Caddy HTTPS、安全响应头、内部 backend 网络或日志轮转设置。
+- 当前生产运行在 Namespace `kaoyan-pomodoro`；API/Web Deployments、Backup CronJob、两个 PVC、Traefik Ingress 和 cert-manager Certificate 的真实状态优先于遗留 Compose 说明。
+- 生产镜像必须来自已合并的 `main`，使用完整 `sha-<40位Git SHA>@sha256:<digest>`；禁止 `latest`、feature/PR 临时镜像和猜测 digest。
+- Git SHA、OCI digest、部署仓库分支尖端、清单基准提交和集群对象状态都是时点信息，每次操作前重新验证；不要把历史部署记录当作当前事实。
+- API 保持单副本 `Recreate`；API、Web 和 Backup 固定到 `guilyrh` 并保留既定 edge toleration。
+- 多用户 migrations `0007`—`0009` 使用同时停止 Web/API 的短维护窗口；不能把只停 Web 描述为完整停写，也不能自动执行 SQLite down migration。
+- Flux/GitOps 协调状态必须在维护窗口前确认。不得让直接 `kubectl` 更新与 GitOps reconciliation 竞争，也不得由本仓库脚本擅自暂停或恢复 Flux。
+- Web、API 和 backup 容器保持非 root。Compose/Caddy 安全头、内部网络与日志限制继续作为本地/遗留容器基线，不得放宽。
 - 在线备份继续使用 SQLite `.backup`、共享 `flock`、压缩前后完整性检查、`gzip -t`、`0600` 和原子 rename。
-- restore 与 update 必须持有 maintenance lock；恢复失败时按现有流程回滚，回滚或 backup 重启失败时保持服务安全停止。
+- Kubernetes 更新失败后保持 API/Web 停止并挂起 Backup CronJob；不自动切旧镜像或恢复旧数据库。遗留 Compose restore/update 继续持有 maintenance lock。
 - 不用 `0777`、忽略 `chmod`、直接复制运行中的 SQLite 文件或跳过 ready 校验来让测试通过。
 
 ## 测试与验证
@@ -141,7 +150,7 @@ pnpm --filter @kaoyan/web test:e2e
 pnpm --filter @kaoyan/web test:pwa
 ```
 
-Docker 生产烟雾测试：
+本地容器集成烟雾测试（不是 Kubernetes 生产部署）：
 
 ```bash
 bash scripts/smoke-test.sh
@@ -152,7 +161,7 @@ bash scripts/smoke-test.sh
 - Web 状态、队列、计时或组件：添加 Vitest/Node Test；关键流程继续运行 Desktop、390px mobile 和双设备 Playwright。
 - PWA、缓存或离线行为：运行 production PWA Playwright，不能只依赖单元测试或 build。
 - migration：验证旧库升级、约束、幂等迁移、foreign key 和 `PRAGMA integrity_check`。
-- 部署、备份或恢复脚本：先扩展脚本级测试，再运行完整 Docker smoke；涉及正式权限语义时补 Debian/ext4 bind 验收。
+- Kubernetes 更新脚本：先扩展 fake-kubectl 脚本级测试，确保 Plan 无变更、Execute 显式确认和失败停写边界；容器内部备份/恢复再运行 Docker smoke，涉及权限语义时补 Linux/ext4 bind 验收。
 - 修复缺陷时优先先写能稳定复现的失败测试，确认失败原因正确，再做最小修复。
 - 若某项因环境限制未运行，交付时明确命令、原因和剩余风险；不要声称通过。
 

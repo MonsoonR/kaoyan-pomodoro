@@ -20,7 +20,8 @@
     "typecheck": "pnpm --recursive --if-present typecheck",
     "test": "pnpm --recursive --if-present test",
     "build": "pnpm --recursive --if-present build",
-    "test:e2e": "pnpm --filter @kaoyan/web test:e2e"
+    "test:e2e": "pnpm --filter @kaoyan/web test:e2e",
+    "admin:reset-password": "pnpm --filter @kaoyan/api account:reset-password"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

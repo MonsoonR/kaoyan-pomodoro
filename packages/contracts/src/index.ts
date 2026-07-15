@@ -10,6 +10,8 @@ const ExpectedVersionSchema = z.int().positive();
 
 export const UsernameSchema = z.string().trim().min(3).max(64);
 export const PasswordSchema = z.string().min(12).max(128);
+export const UserRoleSchema = z.enum(['admin', 'user']);
+export const UserStatusSchema = z.enum(['active', 'disabled']);
 export const LoginRequestSchema = z
   .object({
     username: UsernameSchema,
@@ -28,7 +30,12 @@ export const ChangePasswordRequestSchema = z
     path: ['confirmPassword'],
   });
 export const AuthUserSchema = z
-  .object({ id: IdSchema, username: UsernameSchema })
+  .object({
+    id: IdSchema,
+    username: UsernameSchema,
+    role: UserRoleSchema,
+    mustChangePassword: z.boolean(),
+  })
   .strict();
 export const CurrentSessionSchema = z
   .object({
@@ -58,6 +65,56 @@ export const DeviceListResponseSchema = z
   .object({ devices: z.array(DeviceSchema) })
   .strict();
 export const SuccessResponseSchema = z.object({ ok: z.literal(true) }).strict();
+
+export const InviteTokenSchema = z
+  .string()
+  .length(43)
+  .regex(/^[A-Za-z0-9_-]+$/);
+export const RegisterWithInviteRequestSchema = z
+  .object({
+    token: InviteTokenSchema,
+    username: UsernameSchema,
+    password: PasswordSchema,
+    confirmPassword: PasswordSchema,
+  })
+  .strict()
+  .refine((value) => value.password === value.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
+export const RegisterWithInviteResponseSchema = CurrentSessionSchema;
+export const InviteStatusSchema = z.enum([
+  'active',
+  'used',
+  'expired',
+  'revoked',
+]);
+export const InvitationSchema = z
+  .object({
+    id: IdSchema,
+    status: InviteStatusSchema,
+    createdAt: TimestampSchema,
+    expiresAt: TimestampSchema,
+    usedAt: TimestampSchema.nullable(),
+    usedBy: z
+      .object({ id: IdSchema, username: UsernameSchema })
+      .strict()
+      .nullable(),
+    revokedAt: TimestampSchema.nullable(),
+  })
+  .strict();
+export const InvitationListResponseSchema = z
+  .object({ invitations: z.array(InvitationSchema) })
+  .strict();
+export const CreateInvitationRequestSchema = z
+  .object({ expiresInHours: z.int().min(1).max(24 * 30) })
+  .strict();
+export const CreateInvitationResponseSchema = z
+  .object({ invitation: InvitationSchema, inviteUrl: z.url() })
+  .strict();
+export const InvitationIdParamsSchema = z
+  .object({ invitationId: IdSchema })
+  .strict();
 
 const TaskFieldsSchema = z
   .object({
@@ -688,12 +745,22 @@ export const TimerStateResponseSchema = z.object({
 }).strict();
 
 export type EntityVersion = z.infer<typeof EntityVersionSchema>;
+export type UserRole = z.infer<typeof UserRoleSchema>;
+export type UserStatus = z.infer<typeof UserStatusSchema>;
 export type CurrentSession = z.infer<typeof CurrentSessionSchema>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export type Device = z.infer<typeof DeviceSchema>;
 export type DeviceIdParams = z.infer<typeof DeviceIdParamsSchema>;
 export type DeviceListResponse = z.infer<typeof DeviceListResponseSchema>;
 export type SuccessResponse = z.infer<typeof SuccessResponseSchema>;
+export type Invitation = z.infer<typeof InvitationSchema>;
+export type InviteStatus = z.infer<typeof InviteStatusSchema>;
+export type RegisterWithInviteRequest = z.infer<
+  typeof RegisterWithInviteRequestSchema
+>;
+export type CreateInvitationRequest = z.infer<
+  typeof CreateInvitationRequestSchema
+>;
 export type SyncEntityType = z.infer<typeof SyncEntityTypeSchema>;
 export type SyncOperationType = z.infer<typeof SyncOperationTypeSchema>;
 export type SyncOperation = z.infer<typeof SyncOperationSchema>;

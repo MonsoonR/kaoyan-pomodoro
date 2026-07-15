@@ -27,11 +27,12 @@ beforeEach(() => {
   ] as const)
     db.sqlite
       .prepare(
-        `INSERT INTO users(id,singleton_key,username,password_hash,password_changed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`,
+        `INSERT INTO users(id,singleton_key,username,normalized_username,password_hash,password_changed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`,
       )
       .run(
         id,
         key,
+        `u${key}`,
         `u${key}`,
         'hash',
         clock.getTime(),
