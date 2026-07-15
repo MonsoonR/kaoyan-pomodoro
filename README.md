@@ -57,11 +57,13 @@ pnpm exec playwright install chromium
 - `apps/api`：认证、邀请码、业务 API、同步服务与 SQLite 迁移
 - `apps/web`：React PWA、IndexedDB 离线副本与同步客户端
 - `packages/contracts`：前后端共享的请求、响应与数据校验
-- `scripts`：备份、恢复、更新和生产烟雾测试
+- `scripts`：Kubernetes 生产更新与显式恢复、本地/遗留 Compose 维护和容器集成测试
 
 ## 自托管同步版
 
-生产自托管、HTTPS、PWA、备份与恢复说明见 [部署文档](docs/deployment.md)。从旧单账号数据库升级前，先阅读 [多用户迁移 Runbook](docs/multi-user-migration-runbook.md)。
+当前生产环境运行在 Kubernetes，更新入口为 `scripts/update.sh`（默认仅 Plan，只有显式 `--execute` 才变更集群）。Kubernetes 拓扑、镜像约束、短维护窗口、备份与失败边界见 [部署文档](docs/deployment.md)；从旧单账号数据库升级前，必须先阅读 [多用户迁移 Runbook](docs/multi-user-migration-runbook.md)。
+
+`compose.yml` 与 Caddy 配置继续用于本地容器集成测试和已停止旧服务器的短期回滚参考，不是当前生产更新方式。
 
 初始化得到的原始账号是管理员。管理员登录后可在“邀请管理”创建一次性链接。按用户名安全重置密码：
 

@@ -1,133 +1,163 @@
-# 考研番茄钟自托管部署
+# 考研番茄钟生产部署与更新
 
-本文档面向 Debian 13.2 64-bit（包括腾讯云轻量应用服务器），部署目录固定为 `/opt/kaoyan-pomodoro`。生产拓扑只有 Caddy 发布 80/443；Web、API、SQLite 和备份服务仅位于 Compose 网络中。
+当前生产环境是 Kubernetes。生产更新只通过 Kite 的 Kubectl Terminal 按本页流程执行；Docker Compose 仅用于本地集成测试和已停止的旧服务器短期回滚，不是生产更新目标。
 
-## 服务器、DNS与防火墙
+## 当前生产拓扑
 
-最低建议为 1 vCPU、1 GiB 内存、10 GiB SSD；构建镜像时建议 2 GiB 内存或临时 swap。为独立子域名添加指向服务器公网地址的 A 记录；只有实际配置 IPv6 时才添加 AAAA。安全组和主机防火墙仅开放 SSH、TCP 80、TCP 443 与 UDP 443。UDP 443 用于 HTTP/3，关闭它不会影响 HTTPS。
+- 域名：`https://pomodoro.losenone.cn`
+- Namespace：`kaoyan-pomodoro`
+- API Deployment：`kaoyan-api`，单副本，`Recreate`
+- Web Deployment：`kaoyan-web`
+- Backup CronJob：`kaoyan-backup`
+- 数据 PVC：`kaoyan-data`
+- 备份 PVC：`kaoyan-backups`
+- Ingress：`kaoyan-pomodoro`，由 Traefik 提供 80/443 与 HTTPS
+- Certificate：`kaoyan-pomodoro-certs`
+- API、Web 和 Backup 固定到 `deploy.sagirii.me/node-id=guilyrh`
+- 三者容忍 `deploy.sagirii.me/edge=true:NoSchedule`
 
-按 Docker 官方 Debian 安装说明安装 Docker Engine、Buildx 与 Compose plugin，确认 `docker version` 和 `docker compose version` 均成功。将仓库的已审查版本检出到 `/opt/kaoyan-pomodoro`，不要在服务器上使用浮动的未审查分支。
+部署清单的基准位于 `lose-af/losenone-deploy` 的 `feat/kaoyan-pomodoro`，当前生产状态基准提交为 `71eb512dc56ce0852428e5d95111ed4f4174e19c`。清单和真实集群状态都要核对；不得只依据其中一方猜测生产状态。
 
-```bash
-sudo install -d -m 0755 /opt/kaoyan-pomodoro
-sudo chown "$USER":"$USER" /opt/kaoyan-pomodoro
-cd /opt/kaoyan-pomodoro
-cp .env.example .env
+API 启动时自动运行 Drizzle migration。SQLite 数据位于 `kaoyan-data`，Backup CronJob 同时挂载 `kaoyan-data` 和 `kaoyan-backups`，使用 SQLite `.backup`、完整性检查、gzip 校验、`flock` 和原子 rename。
+
+## 镜像发布约束
+
+`.github/workflows/container-images.yml` 只在应用仓库 `main` push 时发布三张正式镜像：
+
+```text
+ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<40位Git SHA>@sha256:<64位digest>
+ghcr.io/monsoonr/kaoyan-pomodoro-web:sha-<40位Git SHA>@sha256:<64位digest>
+ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<40位Git SHA>@sha256:<64位digest>
 ```
 
-编辑 `.env`：`DOMAIN` 是独立子域名，`APP_ORIGIN` 必须是同域的 `https://` origin，`CADDY_EMAIL` 用于证书通知，`TZ` 默认为 `Asia/Shanghai`，`BACKUP_HOUR` 是本地时区的每日备份小时，`RETENTION_DAYS` 默认为 30。文件中不放账号密码、令牌或私钥。
+生产引用必须同时固定完整 Git SHA tag 和 OCI digest。三张镜像必须来自同一个已经合并到 `main` 的提交。禁止 `latest`、分支名 tag、PR/feature 临时镜像、短 SHA，以及尚未由 registry 返回的猜测 digest。
 
-## 持久目录和权限
+部署仓库中的正式镜像引用也只能在 `main` 镜像真实发布并核对 digest 后修改。若集群由 Flux 或其他 GitOps 控制器协调，维护窗口前必须确认它不会在脚本执行期间把镜像、副本数或 CronJob 状态改回；GitOps 暂停和恢复必须遵循部署仓库的运维流程，不由本仓库脚本猜测或自动操作。
 
-API 与 backup 固定使用 UID/GID 10001，Web 使用 10002，Caddy 使用 1000。创建持久目录：
+## Kubernetes 更新脚本
 
-```bash
-cd /opt/kaoyan-pomodoro
-sudo install -d -o 10001 -g 10001 -m 0750 data backups
-sudo install -d -o 1000 -g 1000 -m 0750 caddy-data caddy-config
-```
+默认入口是 `scripts/update.sh`，它只转发到 `scripts/k8s-update.sh`。不带 `--execute` 时脚本只做只读预检并输出计划。
 
-实际数据分别位于 `/opt/kaoyan-pomodoro/data/kaoyan.sqlite`、`backups/`、`caddy-data/` 和 `caddy-config/`。`backups` 最终为 UID/GID `10001:10001`、mode `0750`；普通部署用户不需要也不能遍历其中的私有备份。不要用 `cp` 复制在线 SQLite 主文件，也不要放宽为全局可写。
-
-## 首次启动、账号与邀请
+在 Kite Kubectl Terminal 中先填写三张已经发布的完整引用：
 
 ```bash
-docker compose config --quiet
-docker compose build
-docker compose up -d
-docker compose ps
-docker compose run --rm --no-deps api node dist/cli/account.js init
+bash scripts/update.sh --plan \
+  --namespace kaoyan-pomodoro \
+  --main-sha <MAIN_SHA> \
+  --api-image 'ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<MAIN_SHA>@sha256:<API_DIGEST>' \
+  --web-image 'ghcr.io/monsoonr/kaoyan-pomodoro-web:sha-<MAIN_SHA>@sha256:<WEB_DIGEST>' \
+  --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
 ```
 
-CLI 在终端中隐藏密码输入；第二次初始化会安全失败。首次初始化的账号角色为管理员。也支持自动化系统从受保护 stdin 传 JSON，设置 `KAOYAN_ACCOUNT_STDIN=1`，但绝不能把密码放入参数或 `.env`。管理员登录后通过“邀请管理”创建一次性注册链接并设置有效期；完整链接只在创建结果中出现一次，数据库只保存摘要。普通用户没有邀请管理入口，直接调用接口会得到 403。浏览器收到的会话 Cookie 为 `HttpOnly; Secure; SameSite=Lax`。注册页和 Caddy 均使用 `Referrer-Policy: no-referrer`。Fastify 对所有 `/api/**` 成功与错误响应设置 `Cache-Control: no-store` 和兼容性的 `Pragma: no-cache`；Caddy 对精确 `/api` 与 `/api/*` 再设置一层 `Cache-Control: no-store`，不影响 hash 静态资源的 immutable 缓存。
+Plan 会检查并记录：
 
-SSH 重置密码会撤销全部现有 session，所有设备需重新登录，本机 IndexedDB 副本和 pending operation 不会被清除：
+- 当前 kubectl context 和固定 Namespace；
+- API/Web 是否健康，API 是否单副本和 `Recreate`；
+- Deployment、CronJob、PVC、Ingress、Certificate 是否存在；
+- 两个 PVC 是否 `Bound`，Certificate 是否 `Ready`；
+- Ingress 是否由 Traefik 服务正式域名；
+- API、Web、Backup 模板的 node affinity 与 taint toleration；
+- 当前 API/Web Pod 是否位于 `guilyrh`；
+- Backup CronJob 是否有活动 Job、上次调度/成功时间和 `suspend` 状态；
+- 三张旧镜像完整引用、API/Web 副本数和目标镜像。
+
+Plan 不运行 `apply`、`patch`、`scale`、`set image`、`rollout`、`create` 或 `delete`。
+
+## 上线前门禁
+
+执行模式前必须全部满足：
+
+1. 多用户改动已合并到应用仓库 `main`，三张正式镜像已发布并取得真实 digest。
+2. lint、typecheck、unit/integration、build、Drizzle check 和脚本测试通过。
+3. migrations `0007`—`0009` 已在最新已验证生产备份的离线副本上完整演练；升级后 `integrity_check=ok`、`foreign_key_check` 无结果、旧管理员及关键记录计数正确。
+4. API 当前单副本且策略为 `Recreate`，API/Web 健康，Backup 没有活动 Job。
+5. 两个 PVC `Bound`，Certificate `Ready`，三个工作负载都固定到 `guilyrh` 并包含既定 toleration。
+6. 已准备短维护窗口、通知、操作者、复核人和人工失败处置方案。
+7. 已确认 GitOps 不会与维护窗口内的 kubectl 变更竞争。
+
+`--migration-check-passed` 是操作者对第 3 项的显式确认，不会替代离线演练。`--confirm-context` 必须逐字等于 `kubectl config current-context`，防止在错误集群执行。脚本显示完整 Plan 和旧镜像后，还要求 `--confirm-execute` 逐字匹配它打印的第二次确认字符串。
+
+## 执行顺序
+
+确认 Plan 后才允许增加 `--execute`：
 
 ```bash
-docker compose run --rm --no-deps api node dist/cli/account.js reset-password --username 用户名
+bash scripts/update.sh --execute \
+  --namespace kaoyan-pomodoro \
+  --confirm-context '<PLAN显示的context>' \
+  --confirm-execute 'UPDATE kaoyan-pomodoro ON <PLAN显示的context> TO <MAIN_SHA>' \
+  --migration-check-passed \
+  --main-sha <MAIN_SHA> \
+  --api-image 'ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<MAIN_SHA>@sha256:<API_DIGEST>' \
+  --web-image 'ghcr.io/monsoonr/kaoyan-pomodoro-web:sha-<MAIN_SHA>@sha256:<WEB_DIGEST>' \
+  --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
 ```
 
-## PWA
+执行模式按以下顺序运行：
 
-首次在线登录并等待“应用已可离线打开”后，可用浏览器的“安装应用”安装。应用壳、构建 JS/CSS、manifest 和本地图标进入 precache；所有 `/api/**` 是 NetworkOnly，任务、计时器、同步响应、密码和会话令牌不会进入 CacheStorage。业务副本和待同步操作仍只在 IndexedDB。新版本会提示，只有点击“更新并刷新”才激活；“稍后”不会中断计时器，并保留重新打开提示的按钮。
+1. 在 `guilyrh` 创建三张目标镜像的短生命周期拉取探针；全部成功后删除探针。
+2. 以 mode `0600` 写入本地状态记录，包含 context、Namespace、旧/新镜像、原副本数和原 CronJob `suspend`。
+3. 挂起 `kaoyan-backup` 并再次确认没有活动 Backup Job。
+4. 先将 Web 缩容到 0，再将 API 缩容到 0，等待所有 Web/API Pod 消失。只停 Web 不构成完整停写，因为已安装的 PWA 或客户端仍可直接访问 API。
+5. 从现有 CronJob 创建 `kaoyan-backup-pre-update-<timestamp>`，等待 Job 成功。备份脚本本身完成 SQLite、gzip 和解压后完整性验证。
+6. 保持 API/Web 为 0，分别更新 API、Web 和 Backup 的完整镜像引用。
+7. 只恢复原 API 单副本。API 启动会执行 Drizzle migrations `0007`—`0009`；等待 rollout 和 readiness 成功，并确认 Pod 仍在 `guilyrh`。
+8. API 成功后恢复 Web 原副本数，等待 rollout，确认 Pod 仍在 `guilyrh`。
+9. 验证正式 HTTPS 的 live、ready 和首页，再次确认 Certificate `Ready`。
+10. 恢复更新前记录的 CronJob `suspend` 状态，保留升级前 Backup Job 和状态记录用于审计。
 
-## 健康、HTTPS与日志
+## 失败边界与人工处置
+
+脚本不提供 SQLite down migration，也不自动恢复旧数据库或旧镜像。
+
+- 镜像拉取探针失败发生在停写前，不改变业务工作负载。
+- 一旦停写开始，任一步失败都会再次把 API/Web 保持在 0，并把 Backup CronJob 保持为 suspended。
+- API 新镜像一旦启动，就必须假设 migrations 可能已经提交。此后绝不能只把 API 镜像改回旧版，否则旧代码可能读取不兼容 schema。
+- 失败时记录升级前 Backup Job、三张旧镜像、原副本数和 CronJob 状态，保留失败数据库现场，先判断是向前修复还是“旧应用 + 升级前数据库”成对恢复。
+- 只有确认尚未接受升级后写入、明确接受丢弃升级后数据，并经单独审核后，才能人工恢复升级前备份。恢复前仍需创建失败现场备份。
+- 不使用 `kubectl rollout undo` 作为多用户数据库升级的自动回滚方式。
+
+## 日常备份与恢复
+
+生产日常备份由 `kaoyan-backup` CronJob 完成。手动生产备份从 CronJob 创建 Job：
 
 ```bash
-curl -fsS https://你的域名/api/health/live
-curl -fsS https://你的域名/api/health/ready
-docker compose ps
-docker compose logs --tail=200 api
+kubectl -n kaoyan-pomodoro create job \
+  --from=cronjob/kaoyan-backup \
+  kaoyan-backup-manual-<timestamp>
 ```
 
-live 只说明进程响应；ready 运行 `SELECT 1`、迁移表检查和 `PRAGMA quick_check(1)`。失败返回安全的 503，细节只进服务端日志。Caddy 自动申请、续期证书和执行 HTTP→HTTPS 跳转；确保证书续期时 DNS 仍指向服务器且 80/443 可达。所有长期服务使用 `json-file`，单文件 10 MiB、最多 3 个。
-
-## 备份
-
-backup 容器启动后做一次在线备份，随后每天在 `BACKUP_HOUR` 执行。它用 SQLite `.backup`、防并发 `flock`、压缩前后两次 `PRAGMA integrity_check`、`gzip -t` 和原子 rename。只有新备份成功后才清理严格匹配本应用命名且超过 30 天的普通文件，并始终保留最新一份。
+生产恢复会替换 SQLite，必须是单独批准的维护操作；`k8s-update.sh` 永远不会自动调用它。独立辅助脚本默认只做只读 Plan：
 
 ```bash
-docker compose run --rm --no-deps backup /app/scripts/backup.sh manual
-docker compose run --rm --no-deps backup /app/scripts/validate-backup.sh /backups/kaoyan-时间-manual.sqlite.gz
-docker compose run --rm --no-deps backup ls -lh /backups
+bash scripts/k8s-restore-backup.sh --plan \
+  --namespace kaoyan-pomodoro \
+  --backup-file kaoyan-<准确时间>-pre-update.sqlite.gz
 ```
 
-更新前运行：
+它要求 API/Web 副本数和 Pod 数都为 0、Backup CronJob 已挂起且没有活动 Job、两个 PVC 均为 `Bound`。正式执行还必须提供精确 context 和脚本打印的完整 `--confirm-restore` 字符串。临时恢复 Pod 同时挂载 `kaoyan-data` 与 `kaoyan-backups`，固定到 `guilyrh`，不使用 HostPath；它先验证目标文件和空间，再额外保存当前数据库的 `pre-restore` 安全副本，随后恢复、修复并核对数据库 `10001:10001`/`0600` 权限、检查完整性和外键，最后只删除临时 Pod。脚本不启动 API/Web、不改镜像、不删除目标备份。
+
+恢复升级前备份会永久丢失该备份之后创建的用户和业务数据。必须先决定接受数据丢失，并保持工作负载停止。`scripts/restore.sh` 只控制遗留 Compose 环境，并要求显式 `--legacy-compose`，不能用于 Kubernetes 生产。
+
+## Docker Compose 的保留边界
+
+以下内容继续保留，用于本地集成、Docker smoke 或旧服务器短期回滚参考：
+
+- `compose.yml`、`compose.test.yml`、`compose.smoke-volumes.yml`
+- `Caddyfile`、`Caddyfile.test`
+- `scripts/smoke-test.sh`
+- `scripts/legacy-compose-update.sh`
+- `scripts/restore.sh --legacy-compose ...`
+
+旧服务器容器当前是 stopped 状态。除非进入单独批准的遗留回滚流程，不启动、停止、删除或更新这些容器。当前生产入口是 Traefik Ingress，不是旧 Caddy。
+
+本地容器集成测试仍可运行：
 
 ```bash
-bash scripts/update.sh
+SMOKE_STORAGE_MODE=volume bash scripts/smoke-test.sh  # Windows Docker Desktop
+SMOKE_STORAGE_MODE=bind bash scripts/smoke-test.sh    # Linux/ext4 权限语义
 ```
 
-它先获取仓库根目录 `.maintenance.lock`，记录并停止长期 backup 服务，创建并验证 `pre-update`，构建新镜像，停止 API 写入，再用新 API 镜像运行现有 `migrateDatabase` CLI。只有 migration 成功、新 API/Web 启动且 readiness 在 30 次内成功，才恢复原本运行的 backup 服务、最后启动 Caddy 并输出 `Deployed`。readiness 超时返回 70，停止新 API 与 backup，打印已验证的 `pre-update` 名称和恢复命令；migration 失败同样保持 API/backup 停止并打印备份位置。构建或 pre-update 阶段失败尚未停止 API 时，则恢复 backup 原状态。Caddy 已在运行也不会被当作 readiness 证据。
+Compose smoke 验证镜像内非 root、SQLite 备份/恢复、权限、Caddy 安全头和容器集成行为，但它不是 Kubernetes 生产部署证明。
 
-## 恢复与回滚
-
-只允许恢复 `backups/` 内符合命名规则的普通非符号链接文件。宿主机参数只接受安全文件名（兼容 `backups/<文件名>`），不执行宿主机 `realpath`，因此推荐的普通 Debian 部署用户无需遍历 UID 10001 的 0750 目录：
-
-```bash
-bash scripts/restore.sh kaoyan-20260713T120000000000000Z-manual.sqlite.gz
-```
-
-脚本在宿主机拒绝绝对路径、`..`、额外目录层级和不符合命名规则的文件；真实 `realpath`、`/backups` containment、普通文件、非符号链接、gzip 与 SQLite integrity 均在 backup 容器内验证。脚本与 update 共用覆盖整个生命周期的 `.maintenance.lock`，第二个维护命令以 75 明确失败。它记录并停止长期 backup，在线创建并验证 `pre-restore`，停止 API 后原子替换数据库，启动并等待 ready，再验证完整性、外键和至少一个可用管理员。`restore-db.sh` 与 `backup.sh` 共用 `/backups/.backup.lock`：已运行的 backup 完成后才替换，恢复持锁时 manual/daily backup 无法启动。
-
-目标验证或 pre-restore 失败且数据库尚未替换时，API 保持在线并恢复 backup 原状态。替换、启动、ready 或恢复后验证失败时，在 maintenance lock 与 backup lock 保护下回滚；回滚成功后 API ready 且恢复原本运行的 backup，命令仍以原失败码退出。回滚失败时 API 与 backup 都保持停止并打印人工恢复命令。成功恢复后也恢复 backup 原状态；维护前原本停止的 backup 不会被擅自启动。
-
-## 迁移与灾难恢复
-
-从单账号版本升级到邀请码多用户版本的前置检查、迁移内容、验收与回滚边界见 [多用户迁移 Runbook](multi-user-migration-runbook.md)。该迁移会先验证历史数据归属和跨表所有者一致性；任何孤立或跨账号引用都会令迁移失败，不会通过关闭外键掩盖问题。
-
-迁移到新服务器时：在旧机执行 manual backup 并验证；安全复制仓库、`.env`（不含密码）、指定 `.sqlite.gz`、`caddy-data/` 和 `caddy-config/`；在新机创建相同 UID/GID 目录；恢复数据库；更新 DNS；验证 HTTPS、登录和 ready。若不迁移 Caddy 数据，Caddy 会重新签发证书，需注意 CA 限速。
-
-灾难恢复优先选择最新已验证备份。新机先构建镜像、放入备份，再用 `restore.sh`。保留一份异机加密备份；本机 30 天保留不能替代异地备份。
-
-## 故障排查
-
-- Caddy 申请证书失败：检查 A/AAAA、80/443、安全组、域名是否错误代理到别处及 `docker compose logs caddy`。
-- API 不 ready：检查 `docker compose logs api`、`data/` UID 10001、磁盘空间和数据库完整性；不要绕过迁移。
-- backup 不健康：用 `docker compose run --rm --no-deps backup ls -lh /backups` 检查内容，并检查 UID 10001、空间和 `.backup.lock`；旧有效备份不会因本次失败被删除。
-- 页面能打开但不能同步：检查 ready、浏览器网络与 APP_ORIGIN 是否和外部 HTTPS origin 完全一致。
-- PWA 更新不出现：确认 `sw.js` 没被 CDN 永久缓存，生产 Caddy 和 Web 已对它设置 `no-cache/no-store`。
-
-停止并移除容器但保留数据：
-
-```bash
-docker compose down
-```
-
-完全删除是不可逆操作。先做异地备份，再显式删除 `/opt/kaoyan-pomodoro/data`、`backups`、`caddy-data` 和 `caddy-config`；`docker compose down --volumes` 不会自动删除这些 bind mount 目录。
-
-## 本地生产烟雾测试
-
-`bash scripts/smoke-test.sh` 使用随机 Compose project、临时持久目录、真实三张生产镜像、真实 Fastify/SQLite/Caddy internal CA 与 HTTPS。它验证端口隔离、非 root UID、安全头和 Cookie、API no-store、hash 静态资源 immutable、index/sw 更新缓存策略、账号 CLI、同步写入、0750 目录下的普通用户文件名恢复、在线备份、maintenance/backup 锁、readiness 与 migration 失败、完整恢复、恢复及回滚后 backup healthy、容器重建持久化、失败恢复自动回滚、29/30/31 天保留边界以及日志不包含测试密码/session token；无论成功失败都会清理。
-
-存储模式默认为 `SMOKE_STORAGE_MODE=auto`：Git Bash/MSYS、Windows/WSL 环境选择 `volume`，原生 Linux 选择 `bind`，也可以显式指定：
-
-```bash
-# Linux/Debian：验证正式宿主机 bind mount 的 UID/GID 和 mode
-SMOKE_STORAGE_MODE=bind bash scripts/smoke-test.sh
-
-# Windows Docker Desktop：使用具备完整 Unix 权限语义的 Docker named volumes
-SMOKE_STORAGE_MODE=volume bash scripts/smoke-test.sh
-```
-
-`volume` 模式避免 Windows bind mount 对 `chmod 0600` 支持不一致，同时仍使用相同的生产镜像、Fastify、SQLite、Caddy、backup 和 restore 脚本；测试专用的一次性 root 容器只负责把 named volumes 初始化为生产 UID/GID 和 `0750`，长期服务仍以非 root 运行。`bind` 模式才验证正式 Debian 宿主机目录权限，因此 Windows 的 `volume` smoke 不能替代最终 Debian/ext4 bind-mount 验收。
+`.github/workflows/deploy.yml` 是仓库原有的独立 GitHub Pages 发布用途；本次没有证据证明该用途废弃，因此保留原文件。它不属于 `pomodoro.losenone.cn` 的 Kubernetes 生产更新流程。

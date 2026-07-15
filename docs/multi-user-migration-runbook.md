@@ -1,53 +1,104 @@
-# 单账号升级为邀请码多用户：生产迁移 Runbook
+# 单账号升级为邀请码多用户：Kubernetes 生产迁移 Runbook
 
-本文用于已有生产 SQLite 数据库升级到多用户版本。迁移只向前执行，不删除历史业务记录，也不会创建一个替代原账号的新管理员。
+本文用于当前 Kubernetes 生产 SQLite 从旧单账号结构升级到多用户版本。API 启动时自动执行 Drizzle migrations；`0007`—`0009` 只向前迁移，没有可安全原地执行的 down migration，因此必须使用短维护窗口并同时停止 Web 和 API。
 
-## 变更范围
+## 迁移内容
 
-迁移 `0007_dapper_jackpot.sql`：
+`0007_dapper_jackpot.sql`：
 
-- 为现有 `users` 增加 `normalized_username`、`role`、`status`、`must_change_password`；
-- 将数据库中原有账号原地标记为 `admin/active`，用户名、密码哈希、账号 ID 和时间字段保持不变；
-- 创建 `invitations`，只保存邀请码 SHA-256 摘要；
-- 移除“数据库只能有一个用户”和“全站只能有一个活动计时器”的索引，保留每个用户一个活动计时器；
-- 修改约束前验证所有私有表都有用户归属，并验证任务、今日任务、专注记录、计时器、设备、会话、同步和冲突的关联记录属于同一用户；验证失败时整个迁移失败。
+- 为现有 `users` 增加标准化用户名、角色、状态和强制改密字段；
+- 将原账号原地标记为 `admin/active`，保留账号 ID、用户名、密码哈希和时间字段；
+- 创建只保存邀请码 SHA-256 摘要的 `invitations`；
+- 从全站单用户/单活动计时器约束迁移为每个用户一个活动计时器；
+- 在改约束前验证所有私有表归属以及关联记录的用户一致性，失败时整个 migration 失败。
 
-迁移 `0008_neat_doorman.sql` 增加同步查询复合索引。迁移 `0009_tearful_proudstar.sql` 把同步回执主键改为 `(user_id, operation_id)`，允许不同用户独立使用相同客户端操作 ID；重建前再次校验设备和冲突所有者，全程不关闭外键，完成后运行 `foreign_key_check`。
+`0008_neat_doorman.sql` 增加同步查询复合索引。`0009_tearful_proudstar.sql` 将同步回执主键改为 `(user_id, operation_id)`；重建前再次检查设备和冲突所有者，全程不关闭外键，完成后运行 `foreign_key_check`。
 
-旧结构中的 `tasks`、`daily_tasks`、`focus_sessions`、`active_timer`、`settings`、`conflicts`、`sync_operations`、`sync_changes`、`devices`、`sessions` 已有非空 `user_id`。迁移不会改写这些稳定 ID，而是先验证它们全部指向原账号；历史数据因此原样属于被提升为管理员的账号。
+## 1. 预检
 
-## 上线前
+1. 变更已经合并到应用仓库 `main`；API/Web/Backup 三张正式镜像来自同一个完整 main SHA，并分别取得真实 OCI digest。
+2. 不把 `feature/invite-multi-user` 或其他 feature/PR 临时镜像写入生产清单或传给执行脚本。
+3. 完整 CI、Drizzle check 和容器集成 smoke 已通过。
+4. 使用最新已验证生产备份的离线副本演练 `0007`—`0009`，确认旧数据兼容、关键记录计数、管理员归属、`integrity_check` 和 `foreign_key_check`。
+5. 运行 `scripts/update.sh --plan ...`，确认：
+   - API/Web 当前健康；
+   - API 为 1 副本且策略为 `Recreate`；
+   - API/Web/Backup 均固定到 `guilyrh`，并具有 `deploy.sagirii.me/edge=true:NoSchedule` toleration；
+   - `kaoyan-data` 与 `kaoyan-backups` 均为 `Bound`；
+   - `kaoyan-pomodoro-certs` 为 `Ready`；
+   - Backup CronJob 没有活动 Job；
+   - 三张旧镜像、API/Web 副本数和 CronJob `suspend` 已记录。
+6. 确认 GitOps 控制器不会在维护窗口内覆盖 kubectl 变更。
 
-1. 冻结写入窗口，确认待发布提交和镜像已经审核，不使用浮动分支。
-2. 运行完整 CI：lint、typecheck、unit/integration、build、迁移测试；在 Linux 生产等价环境运行 smoke test。
-3. 使用现有在线备份流程创建 `pre-update` 备份并通过 `integrity_check`、gzip 校验；另存一份异机加密副本。
-4. 记录当前应用提交、镜像摘要、数据库备份文件名和现有管理员用户名。不要记录密码、Cookie、会话令牌或完整邀请链接。
-5. 确认 `APP_ORIGIN` 是用户实际访问的同源 HTTPS 地址，否则创建出的邀请链接会错误。
+## 2. 冻结写入
 
-## 执行
+执行脚本先挂起 Backup CronJob，然后按顺序：
 
-使用仓库现有 `scripts/update.sh` 流程。它先备份，停止 API 写入，再由新 API 镜像运行迁移，随后等待 readiness。不要手工编辑 SQLite schema，不要关闭外键，也不要在失败后跳过迁移版本。
+```bash
+kubectl -n kaoyan-pomodoro scale deployment/kaoyan-web --replicas=0
+kubectl -n kaoyan-pomodoro scale deployment/kaoyan-api --replicas=0
+```
 
-迁移失败时保持新 API 停止，保存完整错误和备份文件名；不要反复修改生产数据库尝试“修好”。先在备份副本上定位孤立数据或跨用户引用，形成单独、可审核的数据修复方案。
+必须等待旧 API Pod 完全终止，并确认没有 API Pod 仍挂载、写入 SQLite。只停止 Web 不够：已安装 PWA、旧页面或其他客户端仍可能直接访问 `/api`。
 
-## 验收
+## 3. 创建升级前备份
 
-1. readiness 成功，`PRAGMA integrity_check` 为 `ok`，`PRAGMA foreign_key_check` 无结果。
-2. 原用户名和原密码可以登录；`/api/auth/me` 返回 `role=admin`。
-3. 原账号的任务、今日任务、专注记录、设置、统计、冲突、设备和同步历史数量与升级前一致。
-4. 管理员能创建短期测试邀请；列表响应和日志不含完整 token；撤销后注册返回“已撤销”。
-5. 用另一个邀请注册测试普通用户，确认其看不到管理员数据和“邀请管理”导航，直接请求管理员 API 返回 403。
-6. 两个账号分别创建任务并执行一次离线 push/pull，确认只收到自己的变更；检查活动计时器也互不影响。
-7. 测试完成后撤销未使用邀请。完整邀请链接只通过可信渠道传送，不粘贴到工单或日志。
+冻结写入后，使用现有 CronJob 创建一次性 Job：
 
-## 回滚
+```bash
+kubectl -n kaoyan-pomodoro create job \
+  --from=cronjob/kaoyan-backup \
+  kaoyan-backup-pre-update-<timestamp>
+```
 
-SQLite schema 降级会丢失多用户信息，因此不提供原地 down migration。
+等待 Job `Complete` 且 `status.succeeded=1`。现有备份脚本使用 SQLite `.backup`，并在压缩前、gzip 后和解压后验证完整性。保留 Job 名称和状态记录；不要直接复制运行中的 SQLite 主文件。
 
-- 若迁移或启动验收失败，使用 `scripts/update.sh` 输出的已验证 `pre-update` 备份，按现有恢复流程回到旧应用提交和旧数据库；恢复脚本会做完整性、外键和管理员校验。
-- 只有在尚未允许新用户注册、或明确接受删除升级后新数据时，才能恢复旧备份。创建任何新用户或新业务记录后，恢复旧备份会丢失这些数据，应停止回滚并采用向前修复。
-- 回滚后验证原账号登录、历史记录、ready 和备份服务；保留失败数据库副本用于离线调查，不要覆盖最后一个有效备份。
+## 4. 更新与迁移
 
-## 上线后观察
+在 API/Web 都为 0 时设置三张 digest-pinned 镜像。随后只恢复 API 单副本。新 API 启动时自动执行 Drizzle migrations；等待 API rollout 和 `/api/health/ready` 成功后，才恢复 Web。
 
-关注 4xx/5xx 比例、注册错误码、迁移/外键错误、同步冲突量和数据库增长。日志允许记录邀请记录 ID 和状态，但不得记录密码、密码哈希、Cookie、会话令牌、邀请码 token、完整邀请 URL 或带 token 的页面地址。
+正式执行统一使用：
+
+```bash
+bash scripts/update.sh --execute \
+  --namespace kaoyan-pomodoro \
+  --confirm-context '<PLAN显示的context>' \
+  --confirm-execute 'UPDATE kaoyan-pomodoro ON <PLAN显示的context> TO <MAIN_SHA>' \
+  --migration-check-passed \
+  --main-sha <MAIN_SHA> \
+  --api-image 'ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<MAIN_SHA>@sha256:<API_DIGEST>' \
+  --web-image 'ghcr.io/monsoonr/kaoyan-pomodoro-web:sha-<MAIN_SHA>@sha256:<WEB_DIGEST>' \
+  --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
+```
+
+不要手工编辑 SQLite schema，不要关闭外键，不要在 migration 失败后跳过迁移版本。
+
+## 5. 验收
+
+1. API rollout、live 和 ready 成功，API Pod 位于 `guilyrh`，且仍只有一个 SQLite 写实例。
+2. Web rollout 与首页成功，Web Pod 位于 `guilyrh`。
+3. Certificate 仍为 `Ready`，Traefik Ingress 的正式 HTTPS 可访问。
+4. 原用户名和密码可以登录，`/api/auth/me` 返回原账号 `role=admin`。
+5. 原账号的任务、今日任务、专注记录、设置、统计、冲突、设备和同步历史数量与升级前一致。
+6. 管理员能创建、列出和撤销短期邀请；列表和日志不含完整 token。
+7. 使用一个测试邀请注册普通用户，确认看不到管理员数据和邀请管理，直接请求管理员 API 返回 403。
+8. 两个账号分别执行一次 push/pull 和计时器操作，确认用户隔离。
+9. Backup CronJob 恢复到更新前记录的 `suspend` 状态。
+
+## 6. 失败和回滚边界
+
+SQLite schema 降级可能破坏多用户数据，因此没有原地 down migration。
+
+- migration 或 readiness 失败时，脚本保持 API/Web 为 0、Backup CronJob suspended，并打印升级前 Backup Job 和状态记录。
+- 不自动执行 `kubectl rollout undo`，不自动切回旧镜像，不自动恢复旧 SQLite。
+- 先保存失败日志和数据库现场，在备份副本上定位孤立数据、跨用户引用或镜像问题，形成可审核的向前修复方案。
+- 若决定回到旧版本，必须把“旧应用镜像 + 升级前数据库”作为一个整体恢复；只换旧镜像不是数据库回滚。
+- 只有在尚未接受升级后新用户/新业务写入，或明确批准丢弃这些数据时，才能人工恢复升级前备份。恢复前先备份失败现场。
+- 创建任何新用户或业务记录后，恢复升级前备份都会丢数据，应停止回滚并优先向前修复。
+- 若经单独审核决定接受数据丢失，使用 `scripts/k8s-restore-backup.sh` 先做 Plan；只有 API/Web 为 0、API Pod 为 0、Backup CronJob suspended、两个 PVC Bound 且精确确认字符串匹配时，才允许创建临时恢复 Pod。恢复脚本不会自动启动服务或切换镜像。
+
+旧 Docker Compose 容器只为短期遗留回滚保留，不是本次更新目标；任何启动旧容器、切换入口或恢复旧数据库的操作都必须另行批准。
+
+## 7. 上线后观察
+
+关注 4xx/5xx、注册错误、migration/外键错误、同步冲突和数据库增长。日志不得记录密码、密码哈希、Cookie、会话令牌、邀请码 token、完整邀请 URL、kubeconfig、Kubernetes Token 或 Secret 内容。

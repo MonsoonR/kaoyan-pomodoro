@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
+# Legacy Docker Compose restore only. Kubernetes production restore is always a separate,
+# explicitly reviewed operation and is never invoked by k8s-update.sh.
 # shellcheck disable=SC2016 # sqlite expressions expand inside the backup container.
 set -Eeuo pipefail
+
+if [[ "${1:-}" != "--legacy-compose" ]]; then
+  cat >&2 <<'EOF'
+This restore script controls only the stopped legacy Docker Compose environment.
+It is not a Kubernetes production rollback command.
+
+Usage: ./scripts/restore.sh --legacy-compose kaoyan-...sqlite.gz
+EOF
+  exit 64
+fi
+shift
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 exec 9>"$ROOT/.maintenance.lock"
 flock -n 9 || { echo "Another restore or update is already running" >&2; exit 75; }
 
-requested="${1:?Usage: ./scripts/restore.sh kaoyan-...sqlite.gz}"
+requested="${1:?Usage: ./scripts/restore.sh --legacy-compose kaoyan-...sqlite.gz}"
 case "$requested" in
   backups/*) name="${requested#backups/}" ;;
   */*|*\\*|*..*) echo "Restore accepts only a backup filename or backups/<filename>" >&2; exit 64 ;;

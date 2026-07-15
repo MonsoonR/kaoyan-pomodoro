@@ -1,5 +1,7 @@
 # Multi-Device Sync Implementation Plan
 
+> Historical implementation plan. Its Docker Compose/Caddy deployment target describes the original delivery baseline, not the current Kubernetes production update process. Use `docs/deployment.md` for current operations.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Upgrade the local-only study timer into a single-account, self-hosted PWA with secure login, offline-first multi-device synchronization, one global timer, conflict resolution, and Docker Compose deployment.

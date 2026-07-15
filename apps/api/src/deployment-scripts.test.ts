@@ -5,7 +5,12 @@ import { describe, expect, it } from 'vitest';
 const root = resolve(import.meta.dirname, '../../..');
 
 function shellRun() {
-  const command = 'bash scripts/tests/maintenance.test.sh && bash scripts/tests/smoke-test.test.sh';
+  const command = [
+    'bash scripts/tests/maintenance.test.sh',
+    'bash scripts/tests/k8s-update.test.sh',
+    'bash scripts/tests/k8s-restore-backup.test.sh',
+    'bash scripts/tests/smoke-test.test.sh',
+  ].join(' && ');
   if (process.platform === 'win32') {
     const match = /^([A-Za-z]):[\\/](.*)$/.exec(root);
     if (!match) throw new Error(`Cannot convert workspace path: ${root}`);
@@ -29,6 +34,8 @@ describe('deployment maintenance scripts', () => {
     const result = shellRun();
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain('Deployment maintenance script tests passed');
+    expect(result.stdout).toContain('Kubernetes update script safety tests passed');
+    expect(result.stdout).toContain('Kubernetes restore script safety tests passed');
     expect(result.stdout).toContain('Docker smoke infrastructure tests passed');
   }, 35_000);
 });

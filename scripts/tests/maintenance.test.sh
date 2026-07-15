@@ -78,7 +78,7 @@ run_update() {
     READINESS_DELAY_SECONDS=0 \
     FAKE_READY_AFTER="${FAKE_READY_AFTER:-1}" \
     FAKE_MIGRATION_STATUS="${FAKE_MIGRATION_STATUS:-0}" \
-    bash "$ROOT/scripts/update.sh"
+    bash "$ROOT/scripts/legacy-compose-update.sh" --execute-legacy-compose
 }
 
 run_restore() {
@@ -94,12 +94,12 @@ run_restore() {
     FAKE_PRE_RESTORE_FAIL="${FAKE_PRE_RESTORE_FAIL:-0}" \
     FAKE_POSTCHECK_FAIL="${FAKE_POSTCHECK_FAIL:-0}" \
     FAKE_ROLLBACK_FAIL="${FAKE_ROLLBACK_FAIL:-0}" \
-    bash "$ROOT/scripts/restore.sh" kaoyan-20260713T120000000000000Z-manual.sqlite.gz
+    bash "$ROOT/scripts/restore.sh" --legacy-compose kaoyan-20260713T120000000000000Z-manual.sqlite.gz
 }
 
 : >"$scratch/docker.log"
 FAKE_READY_AFTER=3 output="$(run_update 2>&1)"
-grep -q '^Deployed ' <<<"$output"
+grep -q '^Legacy Compose deployment completed ' <<<"$output"
 test "$(cat "$scratch/ready.count")" = 3
 caddy_line="$(grep -n '^up -d caddy$' "$scratch/docker.log" | cut -d: -f1)"
 backup_line="$(grep -n '^up -d backup$' "$scratch/docker.log" | tail -n 1 | cut -d: -f1)"
@@ -113,10 +113,10 @@ status=$?
 set -e
 test "$status" -ne 0
 test "$(cat "$scratch/ready.count")" = 3
-! grep -q '^Deployed ' <<<"$output"
+! grep -q '^Legacy Compose deployment completed ' <<<"$output"
 ! grep -q '^up -d caddy$' "$scratch/docker.log"
 grep -q 'Verified pre-update backup: /backups/kaoyan-' <<<"$output"
-grep -q 'new API and scheduled backup remain stopped' <<<"$output"
+grep -q 'legacy Compose API and scheduled backup remain stopped' <<<"$output"
 
 : >"$scratch/docker.log"
 rm -f "$scratch/ready.count"
@@ -165,7 +165,7 @@ status=$?
 set -e
 test "$status" -ne 0
 ! grep -q '^up -d api web$' "$scratch/docker.log"
-! grep -q '^Deployed ' <<<"$output"
+! grep -q '^Legacy Compose deployment completed ' <<<"$output"
 grep -q 'Verified pre-update backup: /backups/kaoyan-' <<<"$output"
 
 hold_release="$scratch/release-maintenance"
@@ -175,9 +175,9 @@ holder=$!
 while [[ ! -e "$hold_ready" ]]; do sleep 0.05; done
 : >"$scratch/docker.log"
 set +e
-lock_output="$(env PATH="$fake_bin:$PATH" FAKE_DOCKER_LOG="$scratch/docker.log" bash "$ROOT/scripts/restore.sh" kaoyan-20260713T120000000000000Z-manual.sqlite.gz 2>&1)"
+lock_output="$(env PATH="$fake_bin:$PATH" FAKE_DOCKER_LOG="$scratch/docker.log" bash "$ROOT/scripts/restore.sh" --legacy-compose kaoyan-20260713T120000000000000Z-manual.sqlite.gz 2>&1)"
 restore_status=$?
-update_output="$(env PATH="$fake_bin:$PATH" FAKE_DOCKER_LOG="$scratch/docker.log" bash "$ROOT/scripts/update.sh" 2>&1)"
+update_output="$(env PATH="$fake_bin:$PATH" FAKE_DOCKER_LOG="$scratch/docker.log" bash "$ROOT/scripts/legacy-compose-update.sh" --execute-legacy-compose 2>&1)"
 update_status=$?
 set -e
 test "$restore_status" = 75
