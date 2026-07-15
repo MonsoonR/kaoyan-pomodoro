@@ -46,10 +46,24 @@ case "$args" in
   *'tolerations'*'.effect}') printf 'NoSchedule' ;;
   *'get pods -l app.kubernetes.io/component=api -o jsonpath='*) printf 'guilyrh\n' ;;
   *'get pods -l app.kubernetes.io/component=web -o jsonpath='*) printf 'guilyrh\n' ;;
+  *' run kaoyan-pull-api-'*) ;;
+  *' run kaoyan-pull-web-'*) ;;
+  *' run kaoyan-pull-backup-'*) ;;
+  *' get pod kaoyan-pull-api-'*' -o jsonpath={.status.phase}') printf 'Succeeded' ;;
+  *' get pod kaoyan-pull-web-'*' -o jsonpath={.status.phase}') printf 'Succeeded' ;;
+  *' get pod kaoyan-pull-backup-'*' -o jsonpath={.status.phase}') printf 'Failed' ;;
+  *' delete pod kaoyan-pull-'*) ;;
   *) echo "Unhandled fake kubectl call: $args" >&2; exit 99 ;;
 esac
 FAKE_KUBECTL
 chmod +x "$fake_bin/kubectl"
+
+cat >"$fake_bin/curl" <<'FAKE_CURL'
+#!/usr/bin/env bash
+echo 'Unexpected curl call before write freeze' >&2
+exit 98
+FAKE_CURL
+chmod +x "$fake_bin/curl"
 
 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 digest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -109,5 +123,35 @@ test "$second_confirm_status" = 64
 grep -q 'Required execute confirmation: UPDATE kaoyan-pomodoro ON kite-production' <<<"$second_confirm_output"
 grep -q -- '--confirm-execute must exactly match' <<<"$second_confirm_output"
 ! grep -Eq '(^| )(create|delete|patch|scale|set image|rollout)( |$)' "$scratch/kubectl.log"
+
+: >"$scratch/kubectl.log"
+set +e
+pull_output="$(env PATH="$fake_bin:$PATH" FAKE_KUBECTL_LOG="$scratch/kubectl.log" \
+  bash -u "$ROOT/scripts/k8s-update.sh" --execute "${common[@]}" \
+  --confirm-context kite-production \
+  --confirm-execute "UPDATE kaoyan-pomodoro ON kite-production TO $sha" \
+  --migration-check-passed \
+  --record-file "$scratch/update-state.log" 2>&1)"
+pull_status=$?
+set -e
+test "$pull_status" -ne 0
+! grep -q 'unbound variable' <<<"$pull_output"
+! grep -q 'component: unbound variable' <<<"$pull_output"
+grep -Eq 'image pull probe kaoyan-pull-backup-.* failed' <<<"$pull_output"
+
+mapfile -t pull_probe_calls < <(grep ' run kaoyan-pull-' "$scratch/kubectl.log")
+test "${#pull_probe_calls[@]}" = 3
+[[ "${pull_probe_calls[0]}" == *' run kaoyan-pull-api-'* ]]
+[[ "${pull_probe_calls[1]}" == *' run kaoyan-pull-web-'* ]]
+[[ "${pull_probe_calls[2]}" == *' run kaoyan-pull-backup-'* ]]
+for call in "${pull_probe_calls[@]}"; do
+  [[ "$call" == *'"deploy.sagirii.me/node-id":"guilyrh"'* ]]
+  [[ "$call" == *'"key":"deploy.sagirii.me/edge","operator":"Equal","value":"true","effect":"NoSchedule"'* ]]
+done
+
+# A pull-probe failure happens after the state record but before the maintenance window.
+# Cleanup may delete only fake pull probes; it must not suspend or scale workloads.
+grep -q '^timestamp=' "$scratch/update-state.log"
+! grep -Eq '(^| )(patch|scale|set image|create job|rollout)( |$)' "$scratch/kubectl.log"
 
 echo 'Kubernetes update script safety tests passed'

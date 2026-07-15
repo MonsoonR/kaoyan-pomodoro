@@ -309,7 +309,10 @@ wait_for_pod_success() {
   return 1
 }
 pull_check() {
-  local component="$1" image="$2" uid="$3" pod="kaoyan-pull-${component}-${timestamp,,}"
+  local component="$1"
+  local image="$2"
+  local uid="$3"
+  local pod="kaoyan-pull-${component}-${timestamp,,}"
   pull_probe_names+=("$pod")
   k run "$pod" --image="$image" --image-pull-policy=Always --restart=Never --command \
     --overrides="{\"spec\":{\"automountServiceAccountToken\":false,\"nodeSelector\":{\"${NODE_LABEL_KEY}\":\"${REQUIRED_NODE}\"},\"tolerations\":[{\"key\":\"${TAINT_KEY}\",\"operator\":\"Equal\",\"value\":\"true\",\"effect\":\"NoSchedule\"}],\"securityContext\":{\"runAsNonRoot\":true,\"runAsUser\":${uid},\"runAsGroup\":${uid}}}}" \
