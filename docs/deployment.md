@@ -29,7 +29,7 @@ sudo install -d -o 1000 -g 1000 -m 0750 caddy-data caddy-config
 
 实际数据分别位于 `/opt/kaoyan-pomodoro/data/kaoyan.sqlite`、`backups/`、`caddy-data/` 和 `caddy-config/`。`backups` 最终为 UID/GID `10001:10001`、mode `0750`；普通部署用户不需要也不能遍历其中的私有备份。不要用 `cp` 复制在线 SQLite 主文件，也不要放宽为全局可写。
 
-## 首次启动与账号
+## 首次启动、账号与邀请
 
 ```bash
 docker compose config --quiet
@@ -39,12 +39,12 @@ docker compose ps
 docker compose run --rm --no-deps api node dist/cli/account.js init
 ```
 
-CLI 在终端中隐藏密码输入；第二次初始化会安全失败。也支持自动化系统从受保护 stdin 传 JSON，设置 `KAOYAN_ACCOUNT_STDIN=1`，但绝不能把密码放入参数或 `.env`。浏览 `https://你的域名` 登录，浏览器收到的会话 Cookie 为 `HttpOnly; Secure; SameSite=Lax`。Fastify 对所有 `/api/**` 成功与错误响应设置 `Cache-Control: no-store` 和兼容性的 `Pragma: no-cache`；Caddy 对精确 `/api` 与 `/api/*` 再设置一层 `Cache-Control: no-store`，不影响 hash 静态资源的 immutable 缓存。
+CLI 在终端中隐藏密码输入；第二次初始化会安全失败。首次初始化的账号角色为管理员。也支持自动化系统从受保护 stdin 传 JSON，设置 `KAOYAN_ACCOUNT_STDIN=1`，但绝不能把密码放入参数或 `.env`。管理员登录后通过“邀请管理”创建一次性注册链接并设置有效期；完整链接只在创建结果中出现一次，数据库只保存摘要。普通用户没有邀请管理入口，直接调用接口会得到 403。浏览器收到的会话 Cookie 为 `HttpOnly; Secure; SameSite=Lax`。注册页和 Caddy 均使用 `Referrer-Policy: no-referrer`。Fastify 对所有 `/api/**` 成功与错误响应设置 `Cache-Control: no-store` 和兼容性的 `Pragma: no-cache`；Caddy 对精确 `/api` 与 `/api/*` 再设置一层 `Cache-Control: no-store`，不影响 hash 静态资源的 immutable 缓存。
 
 SSH 重置密码会撤销全部现有 session，所有设备需重新登录，本机 IndexedDB 副本和 pending operation 不会被清除：
 
 ```bash
-docker compose run --rm --no-deps api node dist/cli/account.js reset-password
+docker compose run --rm --no-deps api node dist/cli/account.js reset-password --username 用户名
 ```
 
 ## PWA
@@ -88,11 +88,13 @@ bash scripts/update.sh
 bash scripts/restore.sh kaoyan-20260713T120000000000000Z-manual.sqlite.gz
 ```
 
-脚本在宿主机拒绝绝对路径、`..`、额外目录层级和不符合命名规则的文件；真实 `realpath`、`/backups` containment、普通文件、非符号链接、gzip 与 SQLite integrity 均在 backup 容器内验证。脚本与 update 共用覆盖整个生命周期的 `.maintenance.lock`，第二个维护命令以 75 明确失败。它记录并停止长期 backup，在线创建并验证 `pre-restore`，停止 API 后原子替换数据库，启动并等待 ready，再验证完整性和唯一账号。`restore-db.sh` 与 `backup.sh` 共用 `/backups/.backup.lock`：已运行的 backup 完成后才替换，恢复持锁时 manual/daily backup 无法启动。
+脚本在宿主机拒绝绝对路径、`..`、额外目录层级和不符合命名规则的文件；真实 `realpath`、`/backups` containment、普通文件、非符号链接、gzip 与 SQLite integrity 均在 backup 容器内验证。脚本与 update 共用覆盖整个生命周期的 `.maintenance.lock`，第二个维护命令以 75 明确失败。它记录并停止长期 backup，在线创建并验证 `pre-restore`，停止 API 后原子替换数据库，启动并等待 ready，再验证完整性、外键和至少一个可用管理员。`restore-db.sh` 与 `backup.sh` 共用 `/backups/.backup.lock`：已运行的 backup 完成后才替换，恢复持锁时 manual/daily backup 无法启动。
 
 目标验证或 pre-restore 失败且数据库尚未替换时，API 保持在线并恢复 backup 原状态。替换、启动、ready 或恢复后验证失败时，在 maintenance lock 与 backup lock 保护下回滚；回滚成功后 API ready 且恢复原本运行的 backup，命令仍以原失败码退出。回滚失败时 API 与 backup 都保持停止并打印人工恢复命令。成功恢复后也恢复 backup 原状态；维护前原本停止的 backup 不会被擅自启动。
 
 ## 迁移与灾难恢复
+
+从单账号版本升级到邀请码多用户版本的前置检查、迁移内容、验收与回滚边界见 [多用户迁移 Runbook](multi-user-migration-runbook.md)。该迁移会先验证历史数据归属和跨表所有者一致性；任何孤立或跨账号引用都会令迁移失败，不会通过关闭外键掩盖问题。
 
 迁移到新服务器时：在旧机执行 manual backup 并验证；安全复制仓库、`.env`（不含密码）、指定 `.sqlite.gz`、`caddy-data/` 和 `caddy-config/`；在新机创建相同 UID/GID 目录；恢复数据库；更新 DNS；验证 HTTPS、登录和 ready。若不迁移 Caddy 数据，Caddy 会重新签发证书，需注意 CA 限速。
 
