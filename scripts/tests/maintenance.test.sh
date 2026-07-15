@@ -56,7 +56,7 @@ case "$*" in
     printf '%s\n' "$count" >"$FAKE_RESTORE_COUNT"
     [[ "${FAKE_ROLLBACK_FAIL:-0}" == 0 || "$count" -lt 2 ]]
     ;;
-  *'SELECT count(*) FROM users;'*)
+  *'SELECT count(*) FROM users WHERE role = char(97,100,109,105,110)'*)
     [[ "${FAKE_POSTCHECK_FAIL:-0}" == 0 ]]
     ;;
 esac

@@ -1,0 +1,2 @@
+CREATE INDEX `sync_changes_user_entity_idx` ON `sync_changes` (`user_id`,`entity_type`,`entity_id`,`version`);--> statement-breakpoint
+CREATE INDEX `sync_operations_user_operation_idx` ON `sync_operations` (`user_id`,`operation_id`);

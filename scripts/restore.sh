@@ -85,7 +85,8 @@ compose run --rm --no-deps backup /app/scripts/restore-db.sh "/backups/$name"
 compose up -d api
 wait_ready
 compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "PRAGMA integrity_check;")" = ok'
-compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM users;")" -eq 1'
+compose run --rm --no-deps backup sh -c 'test "$(sqlite3 "$DATABASE_PATH" "SELECT count(*) FROM users WHERE role = char(97,100,109,105,110) AND status = char(97,99,116,105,118,101);")" -ge 1'
+compose run --rm --no-deps backup sh -c 'test -z "$(sqlite3 "$DATABASE_PATH" "PRAGMA foreign_key_check;")"'
 restore_backup_service
 trap - EXIT
 echo "Restore completed from $name (rollback point: $pre_name)"

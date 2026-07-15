@@ -21,6 +21,20 @@ export function requireAuthentication(services: Services) {
     request.authSession = auth;
   };
 }
+
+export function requireAdministrator(services: Services) {
+  const authenticateRequest = requireAuthentication(services);
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    await authenticateRequest(request, reply);
+    if (reply.sent) return;
+    if (request.authSession?.role !== 'admin') {
+      return reply.code(403).send({
+        code: 'ADMIN_REQUIRED',
+        message: 'Administrator permission required',
+      });
+    }
+  };
+}
 export function getAuthenticatedSession(
   request: FastifyRequest,
 ): AuthenticatedSession {

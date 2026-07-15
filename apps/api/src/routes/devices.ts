@@ -87,6 +87,14 @@ export async function deviceRoutes(app: FastifyInstance, services: Services) {
     async (request, reply) => {
       const auth = getAuthenticatedSession(request);
       const { deviceId } = DeviceIdParamsSchema.parse(request.params);
+      const ownedDevice = services.sqlite
+        .prepare('SELECT 1 FROM devices WHERE id = ? AND user_id = ?')
+        .get(deviceId, auth.user_id);
+      if (!ownedDevice) {
+        return reply
+          .code(404)
+          .send({ code: 'DEVICE_NOT_FOUND', message: 'Device not found' });
+      }
       if (deviceId === auth.device_id) {
         return reply.code(409).send({
           code: 'CURRENT_DEVICE',

@@ -20,6 +20,7 @@ import type { TrustProxyHops } from './config/env';
 import { openDatabase } from './db/client';
 import { migrateDatabase } from './db/migrate';
 import { authRoutes } from './routes/auth';
+import { adminInviteRoutes } from './routes/admin-invites';
 import { deviceRoutes } from './routes/devices';
 import { studyDataRoutes } from './routes/study-data';
 import { syncRoutes } from './routes/sync';
@@ -36,6 +37,7 @@ import {
 } from './services/errors';
 import { StaleTimerVersionError, TimerError } from './services/timer-errors';
 import { installOriginGuard } from './security/origin-guard';
+import { InvitationError } from './auth/invitation-service';
 
 const BODY_LIMIT_BYTES = 64 * 1024;
 
@@ -102,12 +104,14 @@ export async function createApp(options: AppOptions) {
     passwordOptions,
     dummyPasswordHash,
     verifyPassword: options.verifyPassword ?? verifyPassword,
+    appOrigin: options.appOrigin,
   };
   await authRoutes(
     app,
     services,
     options.loginRateLimit ?? { max: 10, timeWindow: '1 minute' },
   );
+  await adminInviteRoutes(app, services);
   await deviceRoutes(app, services);
   await studyDataRoutes(app, services);
   await syncRoutes(app, services);
@@ -120,6 +124,16 @@ export async function createApp(options: AppOptions) {
       return reply
         .code(400)
         .send({ code: 'VALIDATION_ERROR', message: 'Invalid request' });
+    }
+    if (error instanceof InvitationError) {
+      const status = error.code === 'INVITE_NOT_FOUND'
+        ? 404
+        : error.code === 'INVITE_EXPIRED'
+          ? 410
+          : 409;
+      return reply
+        .code(status)
+        .send({ code: error.code, message: error.message });
     }
     if (error instanceof EntityNotFoundError)
       return reply.code(404).send({ code: error.code, message: error.message });

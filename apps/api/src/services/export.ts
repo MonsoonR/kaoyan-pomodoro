@@ -11,6 +11,8 @@ type SnapshotEstablishedHook = () => void;
 interface AccountRow {
   id: string;
   username: string;
+  role: 'admin' | 'user';
+  must_change_password: number;
 }
 
 interface TaskRow {
@@ -134,7 +136,7 @@ function createSnapshot(
   afterSnapshotEstablished?: SnapshotEstablishedHook,
 ): UserDataExport {
   const account = sqlite
-    .prepare('SELECT id, username FROM users WHERE id = ?')
+    .prepare('SELECT id, username, role, must_change_password FROM users WHERE id = ?')
     .get(userId) as AccountRow | undefined;
   if (!account) throw new Error('Authenticated account not found');
 
@@ -346,7 +348,12 @@ function createSnapshot(
   return UserDataExportSchema.parse({
     exportVersion: 1,
     exportedAt: exportedAt.toISOString(),
-    account,
+    account: {
+      id: account.id,
+      username: account.username,
+      role: account.role,
+      mustChangePassword: Boolean(account.must_change_password),
+    },
     tasks,
     dailyTasks,
     focusSessions,

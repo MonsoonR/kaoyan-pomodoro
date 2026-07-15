@@ -4,6 +4,7 @@ import {
   check,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -19,7 +20,13 @@ export const users = sqliteTable(
     id: text('id').primaryKey(),
     singletonKey: integer('singleton_key').notNull().default(1),
     username: text('username').notNull(),
+    normalizedUsername: text('normalized_username').notNull().default(''),
     passwordHash: text('password_hash').notNull(),
+    role: text('role').notNull().default('user'),
+    status: text('status').notNull().default('active'),
+    mustChangePassword: integer('must_change_password', { mode: 'boolean' })
+      .notNull()
+      .default(false),
     passwordChangedAt: integer('password_changed_at', {
       mode: 'timestamp_ms',
     }).notNull(),
@@ -36,9 +43,11 @@ export const users = sqliteTable(
     lockedUntil: integer('locked_until', { mode: 'timestamp_ms' }),
   },
   (table) => [
-    uniqueIndex('users_singleton_idx').on(table.singletonKey),
     uniqueIndex('users_username_idx').on(table.username),
+    uniqueIndex('users_normalized_username_idx').on(table.normalizedUsername),
     check('users_singleton_check', sql`${table.singletonKey} = 1`),
+    check('users_role_check', sql`${table.role} IN ('admin', 'user')`),
+    check('users_status_check', sql`${table.status} IN ('active', 'disabled')`),
   ],
 );
 
@@ -87,6 +96,50 @@ export const sessions = sqliteTable(
     uniqueIndex('sessions_token_hash_idx').on(table.tokenHash),
     index('sessions_user_expires_idx').on(table.userId, table.expiresAt),
     index('sessions_device_idx').on(table.deviceId),
+  ],
+);
+
+export const invitations = sqliteTable(
+  'invitations',
+  {
+    id: text('id').primaryKey(),
+    tokenHash: text('token_hash').notNull(),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    usedAt: integer('used_at', { mode: 'timestamp_ms' }),
+    usedBy: text('used_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    revokedAt: integer('revoked_at', { mode: 'timestamp_ms' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(nowInMilliseconds),
+  },
+  (table) => [
+    uniqueIndex('invitations_token_hash_idx').on(table.tokenHash),
+    index('invitations_created_by_created_idx').on(
+      table.createdBy,
+      table.createdAt,
+    ),
+    index('invitations_active_idx').on(
+      table.expiresAt,
+      table.usedAt,
+      table.revokedAt,
+    ),
+    check(
+      'invitations_expiry_check',
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      'invitations_usage_check',
+      sql`(${table.usedAt} IS NULL AND ${table.usedBy} IS NULL) OR (${table.usedAt} IS NOT NULL AND ${table.usedBy} IS NOT NULL)`,
+    ),
+    check(
+      'invitations_terminal_state_check',
+      sql`${table.usedAt} IS NULL OR ${table.revokedAt} IS NULL`,
+    ),
   ],
 );
 
@@ -264,9 +317,6 @@ export const activeTimer = sqliteTable(
     deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
   },
   (table) => [
-    uniqueIndex('active_timer_singleton_idx')
-      .on(table.singletonKey)
-      .where(sql`${table.deletedAt} IS NULL`),
     uniqueIndex('active_timer_user_idx')
       .on(table.userId)
       .where(sql`${table.deletedAt} IS NULL`),
@@ -369,7 +419,7 @@ export const conflicts = sqliteTable(
 export const syncOperations = sqliteTable(
   'sync_operations',
   {
-    operationId: text('operation_id').primaryKey(),
+    operationId: text('operation_id').notNull(),
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -394,6 +444,10 @@ export const syncOperations = sqliteTable(
       .default(nowInMilliseconds),
   },
   (table) => [
+    primaryKey({
+      name: 'sync_operations_user_operation_pk',
+      columns: [table.userId, table.operationId],
+    }),
     index('sync_operations_user_created_idx').on(table.userId, table.createdAt),
     index('sync_operations_device_idx').on(table.deviceId, table.processedAt),
     check('sync_operations_base_version_check', sql`${table.baseVersion} >= 0`),
@@ -445,6 +499,12 @@ export const syncChanges = sqliteTable(
   },
   (table) => [
     index('sync_changes_user_cursor_idx').on(table.userId, table.cursor),
+    index('sync_changes_user_entity_idx').on(
+      table.userId,
+      table.entityType,
+      table.entityId,
+      table.version,
+    ),
     index('sync_changes_entity_idx').on(
       table.entityType,
       table.entityId,
@@ -532,6 +592,7 @@ export const schema = {
   dailyTasks,
   devices,
   focusSessions,
+  invitations,
   sessions,
   settings,
   syncChanges,
