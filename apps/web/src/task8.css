@@ -5,6 +5,70 @@
   place-items: center;
   background: radial-gradient(circle at 10% 90%, #dff2e6 0, transparent 32%), #f6f9f7;
 }
+
+.invite-create__controls,
+.invite-link {
+  display: flex;
+  align-items: end;
+  gap: 14px;
+}
+
+.invite-create__controls .field {
+  min-width: 180px;
+  margin: 0;
+}
+
+.invite-list {
+  display: grid;
+  gap: 12px;
+}
+
+.invite-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.invite-row > div {
+  display: grid;
+  gap: 5px;
+}
+
+.invite-row small {
+  color: var(--muted);
+}
+
+.invite-status {
+  width: fit-content;
+}
+
+.invite-status--active { color: var(--green); }
+.invite-status--used { color: var(--muted); }
+.invite-status--expired,
+.invite-status--revoked { color: var(--danger); }
+
+.invite-link input {
+  min-width: 0;
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .invite-create__controls,
+  .invite-link,
+  .invite-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .invite-create__controls .field {
+    min-width: 0;
+  }
+}
 .login-card { width: min(100%, 440px); padding: 34px; border: 1px solid var(--line); border-radius: 22px; background: #fff; box-shadow: var(--shadow-lg); }
 .login-brand { margin-bottom: 26px; color: var(--green-dark); display: flex; align-items: center; gap: 9px; font-weight: 650; }
 .login-card h1 { font-size: 27px; letter-spacing: -.025em; }

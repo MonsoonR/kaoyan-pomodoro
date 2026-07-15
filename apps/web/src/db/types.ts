@@ -101,6 +101,8 @@ export interface MetadataRow {
   deviceId: string | null;
   deviceName: string | null;
   sessionExpiresAt: string | null;
+  role: 'admin' | 'user' | null;
+  mustChangePassword: boolean;
 }
 
 export interface ConflictRow {

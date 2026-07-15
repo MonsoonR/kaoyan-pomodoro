@@ -2,6 +2,7 @@ import type {
   Conflict,
   CurrentSession,
   Device,
+  Invitation,
   PullChangesResponse,
   PushOperationsResponse,
   ResolveConflictRequest,
@@ -37,6 +38,13 @@ export interface AccountApiClient extends SyncApiClient {
     password: string,
     signal?: AbortSignal,
   ): Promise<CurrentSession>;
+  registerWithInvite(
+    token: string,
+    username: string,
+    password: string,
+    confirmPassword: string,
+    signal?: AbortSignal,
+  ): Promise<CurrentSession>;
   logout(signal?: AbortSignal): Promise<{ ok: true }>;
   changePassword(
     currentPassword: string,
@@ -52,6 +60,15 @@ export interface AccountApiClient extends SyncApiClient {
   ): Promise<{ ok: true }>;
   revokeDevice(deviceId: string, signal?: AbortSignal): Promise<{ ok: true }>;
   logoutOtherDevices(signal?: AbortSignal): Promise<{ ok: true }>;
+  listInvitations(signal?: AbortSignal): Promise<readonly Invitation[]>;
+  createInvitation(
+    expiresInHours: number,
+    signal?: AbortSignal,
+  ): Promise<{ invitation: Invitation; inviteUrl: string }>;
+  revokeInvitation(
+    invitationId: string,
+    signal?: AbortSignal,
+  ): Promise<Invitation>;
   resolveConflict(
     conflictId: string,
     request: ResolveConflictRequest,

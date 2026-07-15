@@ -143,10 +143,42 @@ export class AppRuntime {
     return session;
   }
 
+  async registerWithInvite(
+    token: string,
+    username: string,
+    password: string,
+    confirmPassword: string,
+  ): Promise<CurrentSession> {
+    const generation = this.invalidateAuthenticationWork();
+    const session = await this.api.registerWithInvite(
+      token,
+      username,
+      password,
+      confirmPassword,
+    );
+    const activated = await this.activateSession(session, generation);
+    if (activated) await this.engine.resumeAfterAuthentication?.();
+    return session;
+  }
+
   async logout(): Promise<void> {
     this.invalidateAuthenticationWork();
     await this.api.logout();
     await this.authenticationRequired();
+  }
+
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+  ): Promise<void> {
+    await this.api.changePassword(
+      currentPassword,
+      newPassword,
+      confirmPassword,
+    );
+    const session = await this.api.getCurrentSession();
+    await this.activateSession(session);
   }
 
   async authenticationRequired(): Promise<void> {
@@ -276,6 +308,8 @@ export class AppRuntime {
       deviceId: session.deviceId,
       deviceName: session.deviceName,
       sessionExpiresAt: session.expiresAt,
+      role: session.user.role,
+      mustChangePassword: session.user.mustChangePassword,
     });
     if (!this.isAuthenticationWorkCurrent(generation)) return false;
     this.invalidateAuthenticationWork();
@@ -329,7 +363,12 @@ export class AppRuntime {
 function restoreSessionSummary(metadata: MetadataRow): CurrentSession | null {
   if (metadata.authState !== 'authenticated') return null;
   const parsed = CurrentSessionSchema.safeParse({
-    user: { id: metadata.userId, username: metadata.username },
+    user: {
+      id: metadata.userId,
+      username: metadata.username,
+      role: metadata.role ?? 'user',
+      mustChangePassword: metadata.mustChangePassword ?? false,
+    },
     deviceId: metadata.deviceId,
     deviceName: metadata.deviceName,
     expiresAt: metadata.sessionExpiresAt,

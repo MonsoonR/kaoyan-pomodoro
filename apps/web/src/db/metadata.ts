@@ -17,5 +17,7 @@ export function createMetadata(userId: string): MetadataRow {
     deviceId: null,
     deviceName: null,
     sessionExpiresAt: null,
+    role: null,
+    mustChangePassword: false,
   };
 }
