@@ -156,12 +156,11 @@ function insertFixtures() {
     null,
   );
 
-  sqlite.exec('DROP INDEX users_singleton_idx');
   sqlite.prepare(`
     INSERT INTO users (
-      id,singleton_key,username,password_hash,password_changed_at,created_at,
+      id,singleton_key,username,normalized_username,password_hash,password_changed_at,created_at,
       updated_at,failed_login_count,last_failed_login_at,locked_until
-    ) VALUES (?,1,'other-user','DO_NOT_EXPORT_OTHER_PASSWORD',?, ?, ?,0,NULL,NULL)
+    ) VALUES (?,1,'other-user','other-user','DO_NOT_EXPORT_OTHER_PASSWORD',?, ?, ?,0,NULL,NULL)
   `).run(ids.otherUser, createdA, createdA, createdA);
   insertTask.run(ids.otherTask, ids.otherUser, 'Other user task', 'Secret', 1, null, createdA, createdA, null);
   sqlite.prepare(`
@@ -238,7 +237,12 @@ describe('GET /api/export', () => {
     const body = UserDataExportSchema.parse(response.json());
     expect(body.exportVersion).toBe(1);
     expect(body.exportedAt).toBe(fixedNow.toISOString());
-    expect(body.account).toEqual({ id: userId, username: 'learner' });
+    expect(body.account).toEqual({
+      id: userId,
+      username: 'learner',
+      role: 'admin',
+      mustChangePassword: false,
+    });
     expect(body.tasks.map((task) => task.id)).toEqual([
       ids.taskA,
       ids.taskB,

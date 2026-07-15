@@ -23,6 +23,9 @@ import {
   SyncChangeSchema,
   SyncOperationSchema,
   UserDataExportSchema,
+  CreateInvitationRequestSchema,
+  InvitationSchema,
+  RegisterWithInviteRequestSchema,
 } from './index';
 
 const entityId = '018f556e-5bbb-7850-8117-41a14e88b577';
@@ -55,7 +58,12 @@ describe('authentication contracts', () => {
 
   it('validates authentication and device route responses', () => {
     const session = {
-      user: { id: entityId, username: 'learner' },
+      user: {
+        id: entityId,
+        username: 'learner',
+        role: 'user' as const,
+        mustChangePassword: false,
+      },
       deviceId: operationId,
       deviceName: 'Chrome · Windows',
       expiresAt: timestamp,
@@ -65,6 +73,33 @@ describe('authentication contracts', () => {
       devices: [],
     });
     expect(SuccessResponseSchema.parse({ ok: true })).toEqual({ ok: true });
+  });
+
+  it('validates invitation registration and administration payloads', () => {
+    const token = 'A'.repeat(43);
+    expect(RegisterWithInviteRequestSchema.parse({
+      token,
+      username: 'new-user',
+      password: 'secure password 123',
+      confirmPassword: 'secure password 123',
+    }).token).toBe(token);
+    expect(CreateInvitationRequestSchema.parse({ expiresInHours: 24 }))
+      .toEqual({ expiresInHours: 24 });
+    expect(InvitationSchema.parse({
+      id: entityId,
+      status: 'active',
+      createdAt: timestamp,
+      expiresAt: '2026-07-13T08:30:00.000Z',
+      usedAt: null,
+      usedBy: null,
+      revokedAt: null,
+    }).status).toBe('active');
+    expect(() => RegisterWithInviteRequestSchema.parse({
+      token: 'plaintext-too-short',
+      username: 'new-user',
+      password: 'secure password 123',
+      confirmPassword: 'different password',
+    })).toThrow();
   });
 
   it('requires UUID device route parameters', () => {
@@ -82,7 +117,12 @@ describe('UserDataExportSchema', () => {
     const value = {
       exportVersion: 1,
       exportedAt: timestamp,
-      account: { id: entityId, username: 'learner' },
+      account: {
+        id: entityId,
+        username: 'learner',
+        role: 'user' as const,
+        mustChangePassword: false,
+      },
       tasks: [],
       dailyTasks: [],
       focusSessions: [],

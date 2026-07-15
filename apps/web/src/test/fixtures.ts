@@ -19,7 +19,12 @@ export const NOW = '2026-07-13T04:00:00.000Z';
 
 export function session(userId = USER_A): CurrentSession {
   return {
-    user: { id: userId, username: userId === USER_A ? 'student-a' : 'student-b' },
+    user: {
+      id: userId,
+      username: userId === USER_A ? 'student-a' : 'student-b',
+      role: 'user',
+      mustChangePassword: false,
+    },
     deviceId: DEVICE_ID,
     deviceName: 'Test browser',
     expiresAt: '2026-07-14T04:00:00.000Z',

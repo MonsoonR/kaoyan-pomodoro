@@ -105,6 +105,7 @@ describe('constant password verification work', () => {
         passwordOptions: TEST_PASSWORD_OPTIONS,
         dummyPasswordHash: '$argon2id$dummy',
         verifyPassword: verify,
+        appOrigin: 'https://pomodoro.test',
       } as Services;
       await expect(login(services, username, password, '')).rejects.toThrow();
       expect(verify).toHaveBeenCalledTimes(1);

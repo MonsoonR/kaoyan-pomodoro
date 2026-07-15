@@ -144,7 +144,7 @@ describe('authentication API', () => {
       .prepare('select token_hash from sessions')
       .get() as TokenHashResult;
     expect(row.token_hash).not.toBe(raw);
-    expect(response.body).not.toMatch(/hash|token|password/i);
+    expect(response.body).not.toMatch(/password_hash|token_hash|argon2/i);
   });
   it('uses one generic error for wrong username and password', async () => {
     const wrong = await login('wrong password!');
@@ -273,6 +273,7 @@ describe('authentication API', () => {
     await login();
     await resetAccountPassword(
       database.sqlite,
+      ' ＬＥＡＲＮＥＲ ',
       'reset password 123',
       'reset password 123',
       TEST_PASSWORD_OPTIONS,
@@ -287,6 +288,21 @@ describe('authentication API', () => {
     expect(
       database.sqlite.prepare('select count(*) n from sync_changes').get(),
     ).toEqual({ n: 1 });
+    expect(
+      database.sqlite
+        .prepare('select must_change_password from users where normalized_username=?')
+        .get('learner'),
+    ).toEqual({ must_change_password: 1 });
+    const resetLogin = await login('reset password 123');
+    expect(resetLogin.statusCode).toBe(200);
+    expect(resetLogin.json().user.mustChangePassword).toBe(true);
+    await expect(resetAccountPassword(
+      database.sqlite,
+      'missing-user',
+      'unused password 123',
+      'unused password 123',
+      TEST_PASSWORD_OPTIONS,
+    )).rejects.toThrow('User not found');
   });
   it('enforces exact origin and JSON on writes but not reads', async () => {
     expect(

@@ -14,6 +14,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from './client';
 import { defaultMigrationsFolder, migrateDatabase } from './migrate';
 import { createConflictService } from '../sync/conflicts';
+import {
+  hashPassword,
+  TEST_PASSWORD_OPTIONS,
+  verifyPassword,
+} from '../auth/password';
 
 const requiredTables = [
   'active_timer',
@@ -21,6 +26,7 @@ const requiredTables = [
   'daily_tasks',
   'devices',
   'focus_sessions',
+  'invitations',
   'sessions',
   'settings',
   'sync_changes',
@@ -116,7 +122,7 @@ describe('SQLite schema migrations', () => {
     }
   });
 
-  it('creates synchronization indexes and enforces one global active timer', () => {
+  it('creates synchronization indexes and enforces one active timer per user', () => {
     const indexes = connection.sqlite
       .prepare(
         `
@@ -198,30 +204,46 @@ describe('SQLite schema migrations', () => {
     expect(() => connection.sqlite.exec(secondTimerSql)).not.toThrow();
   });
 
-  it('enforces single-account, single-settings, version, timestamp, and foreign-key rules', () => {
+  it('enforces normalized usernames, single-settings, version, timestamp, and foreign-key rules', () => {
     const now = 1_789_000_000_000;
     connection.sqlite
       .prepare(
         `
       INSERT INTO users (
-        id, singleton_key, username, password_hash,
+        id, singleton_key, username, normalized_username, password_hash,
         password_changed_at, created_at, updated_at
-      ) VALUES (?, 1, ?, 'hash', ?, ?, ?)
+      ) VALUES (?, 1, ?, ?, 'hash', ?, ?, ?)
     `,
       )
-      .run('118f556e-5bbb-7850-8117-41a14e88b577', 'owner', now, now, now);
+      .run('118f556e-5bbb-7850-8117-41a14e88b577', 'owner', 'owner', now, now, now);
 
     expect(() =>
       connection.sqlite
         .prepare(
           `
-      INSERT INTO users (
-        id, singleton_key, username, password_hash,
-        password_changed_at, created_at, updated_at
-      ) VALUES (?, 1, ?, 'hash', ?, ?, ?)
+          INSERT INTO users (
+            id, singleton_key, username, normalized_username, password_hash,
+            password_changed_at, created_at, updated_at
+          ) VALUES (?, 1, ?, ?, 'hash', ?, ?, ?)
     `,
         )
-        .run('128f556e-5bbb-7850-8117-41a14e88b577', 'other', now, now, now),
+        .run('128f556e-5bbb-7850-8117-41a14e88b577', 'other', 'other', now, now, now),
+    ).not.toThrow();
+
+    expect(() =>
+      connection.sqlite.prepare(`
+        INSERT INTO users (
+          id, singleton_key, username, normalized_username, password_hash,
+          password_changed_at, created_at, updated_at
+        ) VALUES (?, 1, ?, ?, 'hash', ?, ?, ?)
+      `).run(
+        '129f556e-5bbb-7850-8117-41a14e88b577',
+        'OWNER',
+        'owner',
+        now,
+        now,
+        now,
+      ),
     ).toThrow(/UNIQUE/);
 
     connection.sqlite
@@ -338,13 +360,17 @@ describe('SQLite schema migrations', () => {
     ).toEqual({ resolution_result: null });
   });
 
-  it('rejects duplicate operation IDs and assigns strictly increasing change cursors', () => {
+  it('scopes operation IDs by user and assigns strictly increasing change cursors', () => {
     const now = 1_789_000_000_000;
     connection.sqlite.exec(`
       INSERT INTO users (id, singleton_key, username, password_hash, password_changed_at)
       VALUES ('user-1', 1, 'owner', 'hash', ${now});
       INSERT INTO devices (id, user_id, name, browser, operating_system, last_active_at)
       VALUES ('device-1', 'user-1', 'Laptop', 'Chrome', 'Windows', ${now});
+      INSERT INTO users (id, singleton_key, username, normalized_username, password_hash, password_changed_at)
+      VALUES ('user-2', 1, 'student', 'student', 'hash', ${now});
+      INSERT INTO devices (id, user_id, name, browser, operating_system, last_active_at)
+      VALUES ('device-2', 'user-2', 'Phone', 'Chrome', 'Android', ${now});
       INSERT INTO sync_operations (
         operation_id, user_id, device_id, entity_type, entity_id, operation_type,
         base_version, payload, status, entity_version, created_at
@@ -363,6 +389,15 @@ describe('SQLite schema migrations', () => {
       ) VALUES ('operation-1', 'user-1', 'device-1', 'task', 'task-2', 'create', 0, '{}', 'applied', 1, ${now});
     `),
     ).toThrow(/UNIQUE/);
+
+    expect(() =>
+      connection.sqlite.exec(`
+      INSERT INTO sync_operations (
+        operation_id, user_id, device_id, entity_type, entity_id, operation_type,
+        base_version, payload, status, entity_version, created_at
+      ) VALUES ('operation-1', 'user-2', 'device-2', 'task', 'task-2', 'create', 0, '{}', 'applied', 1, ${now});
+    `),
+    ).not.toThrow();
 
     const cursors = connection.sqlite
       .prepare('SELECT cursor FROM sync_changes ORDER BY cursor')
@@ -672,6 +707,107 @@ describe('SQLite schema migrations', () => {
     } finally {
       legacy.close();
       rmSync(partialFolder, { force: true, recursive: true });
+    }
+  });
+
+  it('upgrades a populated single-account database without losing ownership or credentials', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kaoyan-multi-user-migration-'));
+    const partialFolder = join(directory, 'drizzle');
+    const metaFolder = join(partialFolder, 'meta');
+    mkdirSync(metaFolder, { recursive: true });
+    const legacyMigrations = [
+      '0000_unknown_red_wolf.sql',
+      '0001_broad_dakota_north.sql',
+      '0002_wakeful_dark_beast.sql',
+      '0003_kind_skreet.sql',
+      '0004_conflict_resolution_result.sql',
+      '0005_legacy_conflict_resolution_results.sql',
+      '0006_far_slipstream.sql',
+    ];
+    for (const migration of legacyMigrations)
+      copyFileSync(
+        join(defaultMigrationsFolder, migration),
+        join(partialFolder, migration),
+      );
+    const journal = JSON.parse(readFileSync(
+      join(defaultMigrationsFolder, 'meta', '_journal.json'),
+      'utf8',
+    )) as { entries: Array<{ idx: number }> };
+    writeFileSync(
+      join(metaFolder, '_journal.json'),
+      JSON.stringify({ ...journal, entries: journal.entries.slice(0, 7) }),
+    );
+
+    const legacy = openDatabase(':memory:');
+    try {
+      migrateDatabase(legacy.db, partialFolder);
+      const now = Date.parse('2026-07-15T08:00:00.000Z');
+      const userId = '11111111-1111-4111-8111-111111111111';
+      const taskId = '22222222-2222-4222-8222-222222222222';
+      const dailyId = '33333333-3333-4333-8333-333333333333';
+      const deviceId = '44444444-4444-4444-8444-444444444444';
+      const conflictId = '55555555-5555-4555-8555-555555555555';
+      const legacyPassword = 'legacy secure password 123';
+      const legacyPasswordHash = await hashPassword(
+        legacyPassword,
+        TEST_PASSWORD_OPTIONS,
+      );
+      legacy.sqlite.prepare(`
+        INSERT INTO users(id,singleton_key,username,password_hash,password_changed_at,created_at,updated_at)
+        VALUES (?,1,'LegacyOwner',?,?,?,?)
+      `).run(userId, legacyPasswordHash, now, now, now);
+      legacy.sqlite.exec(`
+        INSERT INTO devices(id,user_id,name,browser,operating_system,last_active_at,created_at,updated_at)
+        VALUES ('${deviceId}','${userId}','Laptop','Chrome','Windows',${now},${now},${now});
+        INSERT INTO sessions(id,user_id,device_id,token_hash,expires_at,last_seen_at,created_at)
+        VALUES ('session','${userId}','${deviceId}','session-hash',${now + 60_000},${now},${now});
+        INSERT INTO tasks(id,user_id,title,subject,default_pomodoro_target,default_timer_preset,version,created_at,updated_at)
+        VALUES ('${taskId}','${userId}','历史任务','数学',4,'50-10',1,${now},${now});
+        INSERT INTO daily_tasks(id,user_id,source_task_id,date,title,subject,pomodoro_target,timer_preset,status,version,created_at,updated_at)
+        VALUES ('${dailyId}','${userId}','${taskId}','2026-07-15','历史任务','数学',4,'50-10','pending',1,${now},${now});
+        INSERT INTO focus_sessions(id,user_id,daily_task_id,task_title,subject,phase,planned_seconds,effective_seconds,started_at,ended_at,result,version,created_at,updated_at)
+        VALUES ('focus','${userId}','${dailyId}','历史任务','数学','focus',1500,1500,${now - 1500_000},${now},'completed',1,${now},${now});
+        INSERT INTO active_timer(id,singleton_key,user_id,daily_task_id,task_title,subject,phase,status,planned_seconds,started_at,target_end_at,version,created_at,updated_at)
+        VALUES ('timer',1,'${userId}','${dailyId}','历史任务','数学','focus','running',1500,${now},${now + 1500_000},1,${now},${now});
+        INSERT INTO settings(id,user_id,version,created_at,updated_at)
+        VALUES ('settings','${userId}',1,${now},${now});
+        INSERT INTO conflicts(id,user_id,device_id,entity_type,entity_id,conflict_type,local_operation_id,base_version,server_version,local_payload,server_payload,status,created_at)
+        VALUES ('${conflictId}','${userId}','${deviceId}','task','${taskId}','delete_modify','operation',1,1,'{}','{}','open',${now});
+        INSERT INTO sync_operations(operation_id,user_id,device_id,entity_type,entity_id,operation_type,base_version,payload,status,entity_version,created_at,processed_at)
+        VALUES ('operation','${userId}','${deviceId}','task','${taskId}','update',1,'{}','applied',2,${now},${now});
+        INSERT INTO sync_changes(user_id,entity_type,entity_id,version,change_type,payload,changed_at)
+        VALUES ('${userId}','task','${taskId}',1,'upsert','{}',${now});
+      `);
+
+      migrateDatabase(legacy.db);
+      expect(legacy.sqlite.prepare(`
+        SELECT username,normalized_username,role,status,must_change_password,
+          password_hash FROM users WHERE id = ?
+      `).get(userId)).toEqual({
+        username: 'LegacyOwner',
+        normalized_username: 'legacyowner',
+        role: 'admin',
+        status: 'active',
+        must_change_password: 0,
+        password_hash: legacyPasswordHash,
+      });
+      expect(await verifyPassword(legacyPasswordHash, legacyPassword)).toBe(true);
+      for (const table of [
+        'tasks', 'daily_tasks', 'focus_sessions', 'active_timer', 'settings',
+        'conflicts', 'sync_operations', 'sync_changes', 'devices', 'sessions',
+      ]) {
+        expect(legacy.sqlite.prepare(
+          `SELECT count(*) AS count FROM ${table} WHERE user_id = ?`,
+        ).get(userId), table).toEqual({ count: 1 });
+      }
+      expect(legacy.sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(legacy.sqlite.prepare(
+        `SELECT count(*) AS count FROM sqlite_schema WHERE type = 'index'
+          AND name IN ('users_singleton_idx','active_timer_singleton_idx')`,
+      ).get()).toEqual({ count: 0 });
+    } finally {
+      legacy.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });
