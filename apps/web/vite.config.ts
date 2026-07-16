@@ -2,13 +2,6 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA, type VitePWAOptions } from 'vite-plugin-pwa';
 
-const repositoryName = process.env.GITHUB_REPOSITORY?.split('/')[1];
-const isUserOrOrganizationSite = repositoryName?.endsWith('.github.io');
-const base =
-  process.env.GITHUB_ACTIONS === 'true' && repositoryName && !isUserOrOrganizationSite
-    ? `/${repositoryName}/`
-    : '/';
-
 export const pwaOptions: Partial<VitePWAOptions> = {
   registerType: 'prompt',
   includeAssets: ['favicon.svg', 'icons/*.svg'],
@@ -51,7 +44,7 @@ const apiProxy = process.env.KAOYAN_API_ORIGIN
   : undefined;
 
 export default defineConfig({
-  base,
+  base: '/',
   build: { target: 'esnext', emptyOutDir: true },
   plugins: [react(), VitePWA(pwaOptions)],
   ...(apiProxy ? { server: { proxy: apiProxy }, preview: { proxy: apiProxy } } : {}),

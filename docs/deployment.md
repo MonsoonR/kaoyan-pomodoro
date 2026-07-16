@@ -160,4 +160,4 @@ SMOKE_STORAGE_MODE=bind bash scripts/smoke-test.sh    # Linux/ext4 权限语义
 
 Compose smoke 验证镜像内非 root、SQLite 备份/恢复、权限、Caddy 安全头和容器集成行为，但它不是 Kubernetes 生产部署证明。
 
-`.github/workflows/deploy.yml` 是仓库原有的独立 GitHub Pages 发布用途；本次没有证据证明该用途废弃，因此保留原文件。它不属于 `pomodoro.losenone.cn` 的 Kubernetes 生产更新流程。
+GitHub Pages 部署已经退役，原 `.github/workflows/deploy.yml` 已删除，后续提交和合并不再触发 Pages 构建或发布。应用仓库保留的 CI 和正式镜像发布工作流是 `.github/workflows/container-images.yml`；正式生产更新仍通过上述 Kubernetes 半自动更新流程完成。
