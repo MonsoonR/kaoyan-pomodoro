@@ -3,6 +3,8 @@ import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
+import Database from 'better-sqlite3';
+
 import { initializeAccount, resetAccountPassword } from '../auth/account-service';
 import { openDatabase } from '../db/client';
 import { resolveDatabaseSource } from '../db/database-source';
@@ -10,6 +12,18 @@ import { migrateDatabase } from '../db/migrate';
 import { promptHidden } from './prompt-password';
 
 type Input = { username: string | undefined; password: string; confirmPassword: string };
+
+export function getAccountInitializationStatus(source: string) {
+  const sqlite = new Database(source, { readonly: true, fileMustExist: true });
+  try {
+    const row = sqlite
+      .prepare('SELECT EXISTS(SELECT 1 FROM users) AS initialized')
+      .get() as { initialized: 0 | 1 };
+    return row.initialized === 1;
+  } finally {
+    sqlite.close();
+  }
+}
 
 async function readInput(
   command: string,
@@ -39,8 +53,8 @@ async function readInput(
 
 async function main() {
   const command = process.argv[2];
-  if (command !== 'init' && command !== 'reset-password')
-    throw new Error('Use init or reset-password');
+  if (command !== 'init' && command !== 'reset-password' && command !== 'status')
+    throw new Error('Use init, reset-password or status');
   const extra = process.argv.slice(3);
   let resetUsername: string | undefined;
   if (command === 'init' && extra.length !== 0)
@@ -52,9 +66,16 @@ async function main() {
   }
   const path = process.env.DATABASE_PATH;
   if (!path) throw new Error('DATABASE_PATH is required');
-  const input = await readInput(command, resetUsername);
-  const connection = openDatabase(resolveDatabaseSource(path));
+  const source = resolveDatabaseSource(path);
+  if (command === 'status') {
+    if (extra.length !== 0) throw new Error('Use status without account arguments');
+    stdout.write(getAccountInitializationStatus(source) ? 'initialized\n' : 'not-initialized\n');
+    return;
+  }
+
+  const connection = openDatabase(source);
   try {
+    const input = await readInput(command, resetUsername);
     migrateDatabase(connection.db);
     if (command === 'init') {
       await initializeAccount(connection.sqlite, {
