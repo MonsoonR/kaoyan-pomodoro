@@ -89,6 +89,8 @@ bash scripts/k8s-update.sh --resume \
   --confirm-execute 'UPDATE kaoyan-pomodoro ON nzfklii-kite TO <MAIN_SHA> USING <preserve或reset-empty>'
 ```
 
+`--execute`、未完成的 `--resume` 和管理员 helper 会共同持有命名空间级 `Lease/kaoyan-update-operation-lock`。Lease 记录 owner 和过期 epoch，并通过 `resourceVersion` 抢占过期锁；第二个终端在创建临时 Pod、停写或改镜像前以退出码 73 拒绝。正常退出会把 Lease 释放为空 owner；终端异常消失时，在输出的过期时间之后重试即可，不依赖 `/tmp` 文件锁。
+
 ### 日常保留数据库更新
 
 日常更新默认是 `preserve`。执行前要求 API/Web 健康、API `Recreate`、两个 PVC `Bound`、Certificate `Ready`、无活动 Backup Job，并要求操作者已经用安全备份副本离线演练 migrations：
@@ -105,7 +107,7 @@ bash scripts/k8s-update.sh --execute \
   --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
 ```
 
-顺序固定为：在 `guilyrh` 拉取检查三张镜像；挂起 Backup；停止 Web 再停止 API；创建并验证确定名称的升级前 Backup Job；更新三张镜像；先启动 API 并等待 migration/rollout/readiness；再启动 Web；检查正式 HTTPS 和 Certificate；最后恢复执行前的 CronJob suspend 状态。
+顺序固定为：在 `guilyrh` 拉取检查三张镜像；挂起 Backup；停止 Web 再停止 API；创建并验证确定名称的升级前 Backup Job；更新三张镜像；先启动 API 并等待 migration/rollout/readiness；再启动 Web；检查正式 HTTPS 和 Certificate；最后恢复执行前的 CronJob suspend 状态。脚本轮询 Job 的 `Complete`/`Failed` condition，不用只等待 `Complete` 直到 1800 秒。成功 Job直接复用且不删除；Failed Job原样保留，并把确定性的 `-retry-N` 名称、attempt 和失败 Job列表先写入状态 ConfigMap。本次执行安全失败后，调查原 Job并再次 `--resume`，才会创建已记录的重试 Job。
 
 ### 一次性空库重建
 
@@ -138,7 +140,7 @@ bash scripts/k8s-admin-init.sh \
   --confirm-init 'INITIALIZE ADMIN IN kaoyan-pomodoro ON nzfklii-kite FOR <MAIN_SHA>'
 ```
 
-辅助脚本从持久状态读取新 API 镜像，创建固定在 `guilyrh` 的非 root 一次性 Pod并通过 TTY 运行 `node dist/cli/account.js init`。用户名和密码不允许出现在命令参数、环境变量、ConfigMap 或日志中。成功后再运行前述 `--resume`；主脚本会通过只输出 `initialized`/`not-initialized` 的数据库检查确认管理员存在，然后先启动 API、再启动 Web。
+辅助脚本从持久状态读取新 API 镜像。它先创建固定在 `guilyrh`、只读挂载数据 PVC 的受限状态检查 Pod，运行 `node dist/cli/account.js status`。若数据库已返回 `initialized`（包括 init 已提交、但 Kite 在 ConfigMap patch 前断开的现场），helper 不创建或 attach 初始化 Pod，而是把阶段收敛到 `admin-initialized` 并以 0 退出；只有 `not-initialized` 才创建非 root 一次性 TTY Pod运行 `node dist/cli/account.js init`。用户名和密码不允许出现在命令参数、环境变量、ConfigMap 或日志中。成功后再运行前述 `--resume`；主脚本会再次从数据库事实确认管理员存在，然后先启动 API、再启动 Web。
 
 所有更新临时 Pod 都设置 `automountServiceAccountToken: false`、非 root、`allowPrivilegeEscalation: false`、`drop: ALL`、`RuntimeDefault` seccomp、固定节点和 edge toleration；不使用 HostPath。
 
@@ -147,6 +149,8 @@ bash scripts/k8s-admin-init.sh \
 - 镜像拉取失败发生在停写前，不改变 Deployment、CronJob 或持久状态对象。
 - 停写或空库状态持久化后，任一步失败都会强制 API/Web 为 0、Backup `suspend=true`，并保留最后完成阶段供 `--resume` 使用。
 - 管理员未初始化是安全暂停，不启动 Web；终端在初始化成功后、状态 patch 前断开也没关系，`--resume` 会从数据库事实识别已完成初始化。
+- preserve 备份 Job出现 `Failed=True` 时会立即失败，不等待满 1800 秒；保留失败 Job，按状态中的 `backupJob`/`backupAttempt`/`failedBackupJobs` 调查，并用同一条 `--resume` 创建已持久化的确定性重试。
+- 若提示另一个 owner 持有更新 Lease，不要删除对方临时 Pod或覆盖阶段；先确认对应终端是否仍在运行，只在 Lease 显示的过期 epoch 之后重试。
 - 脚本不提供 SQLite down migration，不自动恢复旧数据库，不自动切回旧镜像，也不执行 `kubectl rollout undo`。
 - 新 API 镜像可能已经提交 migrations 后，禁止只切回旧应用镜像。人工回退必须单独审核“旧应用镜像 + 匹配的旧数据库”整体方案。
 - 若考虑恢复备份，先保存失败现场，确认没有需要保留的升级后写入并明确接受数据损失；再单独运行 `scripts/k8s-restore-backup.sh --plan`。更新脚本不会调用恢复脚本。

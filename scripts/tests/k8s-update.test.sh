@@ -125,10 +125,22 @@ case "$verb" in
         else echo "Unhandled configmap get: $name $args" >&2; exit 99
         fi
         ;;
+      lease)
+        name="${1:-}"; shift || true; args="$*"
+        if [[ "$args" == *'-o name'* ]]; then
+          if [[ -f "$state/lease.exists" ]]; then printf 'lease.coordination.k8s.io/%s\n' "$name"; fi
+        elif [[ "$args" == *holderIdentity* ]]; then getv lease.holder
+        elif [[ "$args" == *resourceVersion* ]]; then getv lease.resourceVersion
+        elif [[ "$args" == *expires-at-epoch* ]]; then getv lease.expires
+        else echo "Unhandled lease get: $name $args" >&2; exit 99
+        fi
+        ;;
       job)
         name="${1:-}"; shift || true; args="$*"
         if [[ "$args" == *'-o name'* ]]; then
-          if [[ -f "$state/job.$name.succeeded" ]]; then printf 'job.batch/%s\n' "$name"; fi
+          if [[ -f "$state/job.$name.succeeded" || -f "$state/job.$name.failed" || -f "$state/job.$name.complete" ]]; then printf 'job.batch/%s\n' "$name"; fi
+        elif [[ "$args" == *'type=="Complete"'* ]]; then getv "job.$name.complete"
+        elif [[ "$args" == *'type=="Failed"'* ]]; then getv "job.$name.failed"
         elif [[ "$args" == *status.succeeded* ]]; then getv "job.$name.succeeded" 0
         else echo "Unhandled job get: $name $args" >&2; exit 99
         fi
@@ -147,42 +159,54 @@ case "$verb" in
     if [[ "${1:-}" == "-f" ]]; then
       yaml="$(cat)"
       printf '\n---\n%s\n' "$yaml" >>"$state/yaml.log"
+      kind="$(awk '$1 == "kind:" { print $2; exit }' <<<"$yaml")"
       name="$(awk '$1 == "name:" { print $2; exit }' <<<"$yaml")"
-      component="$(awk '$1 == "app.kubernetes.io/component:" { print $2; exit }' <<<"$yaml")"
-      image="$(awk '$1 == "image:" { print $2; exit }' <<<"$yaml")"
-      putv "pod.$name.image" "$image"
-      phase=Succeeded log=ok
-      case "$component" in
-        update-pull-*)
-          pull_component="${component#update-pull-}"
-          if [[ "$(getv pull_fail_component)" == "$pull_component" ]]; then phase=Failed; log="pull failed"; fi
-          ;;
-        update-reset-check)
-          if [[ "$(getv db_main absent)" == present || "$(getv db_wal absent)" == present || "$(getv db_shm absent)" == present ]]; then
-            phase=Failed; log="Data PVC is not empty"
-          elif [[ "$(getv backup_valid 1)" != 1 ]]; then
-            phase=Failed; log="Backup integrity check failed"
-          else log=reset-empty-preflight-ok
-          fi
-          ;;
-        update-migration)
-          if [[ "$(getv migration_fail 0)" == 1 ]]; then phase=Failed; log="migration failed"
-          else putv db_main present; log=migrated
-          fi
-          ;;
-        update-account-status)
-          [[ "$(getv admin_initialized 0)" == 1 ]] && log=initialized || log=not-initialized
-          ;;
-        admin-init) phase=Running; log="" ;;
-      esac
-      putv "pod.$name.phase" "$phase"
-      putv "pod.$name.log" "$log"
+      if [[ "$kind" == Lease ]]; then
+        [[ ! -f "$state/lease.exists" ]] || exit 1
+        holder="$(awk '$1 == "holderIdentity:" { print $2; exit }' <<<"$yaml")"; holder="${holder%\"}"; holder="${holder#\"}"
+        expires="$(awk '$1 == "kaoyan.losenone.cn/expires-at-epoch:" { print $2; exit }' <<<"$yaml")"; expires="${expires%\"}"; expires="${expires#\"}"
+        touch "$state/lease.exists"; putv lease.holder "$holder"; putv lease.expires "$expires"; putv lease.resourceVersion 1
+      else
+        component="$(awk '$1 == "app.kubernetes.io/component:" { print $2; exit }' <<<"$yaml")"
+        image="$(awk '$1 == "image:" { print $2; exit }' <<<"$yaml")"
+        putv "pod.$name.image" "$image"
+        phase=Succeeded log=ok
+        case "$component" in
+          update-pull-*)
+            pull_component="${component#update-pull-}"
+            if [[ "$(getv pull_fail_component)" == "$pull_component" ]]; then phase=Failed; log="pull failed"; fi
+            ;;
+          update-reset-check)
+            if [[ "$(getv db_main absent)" == present || "$(getv db_wal absent)" == present || "$(getv db_shm absent)" == present ]]; then
+              phase=Failed; log="Data PVC is not empty"
+            elif [[ "$(getv backup_valid 1)" != 1 ]]; then
+              phase=Failed; log="Backup integrity check failed"
+            else log=reset-empty-preflight-ok
+            fi
+            ;;
+          update-migration)
+            if [[ "$(getv migration_fail 0)" == 1 ]]; then phase=Failed; log="migration failed"
+            else putv db_main present; log=migrated
+            fi
+            ;;
+          update-account-status|admin-status)
+            [[ "$(getv admin_initialized 0)" == 1 ]] && log=initialized || log=not-initialized
+            ;;
+          admin-init) phase=Running; log="" ;;
+        esac
+        putv "pod.$name.phase" "$phase"
+        putv "pod.$name.log" "$log"
+      fi
     elif [[ "${1:-}" == "configmap" ]]; then
       touch "$state/configmap.exists"
       putv cm.schemaVersion 1
     elif [[ "${1:-}" == "job" ]]; then
       name="${@: -1}"
-      [[ "$(getv backup_job_fail 0)" == 1 ]] && putv "job.$name.succeeded" 0 || putv "job.$name.succeeded" 1
+      if [[ "$(getv backup_job_fail_once 0)" == 1 && "$(getv backup_job_failure_consumed 0)" != 1 ]]; then
+        putv backup_job_failure_consumed 1; putv "job.$name.failed" True; putv "job.$name.complete" ""; putv "job.$name.succeeded" 0
+      else
+        putv "job.$name.failed" False; putv "job.$name.complete" True; putv "job.$name.succeeded" 1
+      fi
     else echo "Unhandled create: $*" >&2; exit 99
     fi
     ;;
@@ -195,7 +219,7 @@ case "$verb" in
     done
     if [[ "$resource" == configmap ]]; then
       touch "$state/configmap.exists"
-      for field in schemaVersion phase mainSha databaseMode backupFile apiImage webImage backupImage desiredApiReplicas desiredWebReplicas finalCronSuspend databaseStatus backupJob lastResult; do
+      for field in schemaVersion phase mainSha databaseMode backupFile apiImage webImage backupImage desiredApiReplicas desiredWebReplicas finalCronSuspend databaseStatus backupJob backupAttempt failedBackupJobs lastResult; do
         needle="\"$field\":\""
         if [[ "$payload" == *"$needle"* ]]; then
           rest="${payload#*"$needle"}"
@@ -212,6 +236,16 @@ case "$verb" in
       fi
     else echo "Unhandled patch: $resource $name $payload" >&2; exit 99
     fi
+    ;;
+  replace)
+    [[ "${1:-}" == "-f" ]] || { echo "Unhandled replace: $*" >&2; exit 99; }
+    yaml="$(cat)"
+    printf '\n---\n%s\n' "$yaml" >>"$state/yaml.log"
+    resource_version="$(awk '$1 == "resourceVersion:" { print $2; exit }' <<<"$yaml")"; resource_version="${resource_version%\"}"; resource_version="${resource_version#\"}"
+    [[ -f "$state/lease.exists" && "$resource_version" == "$(getv lease.resourceVersion)" ]] || exit 1
+    holder="$(awk '$1 == "holderIdentity:" { print $2; exit }' <<<"$yaml")"; holder="${holder%\"}"; holder="${holder#\"}"
+    expires="$(awk '$1 == "kaoyan.losenone.cn/expires-at-epoch:" { print $2; exit }' <<<"$yaml")"; expires="${expires%\"}"; expires="${expires#\"}"
+    putv lease.holder "$holder"; putv lease.expires "$expires"; putv lease.resourceVersion "$((resource_version + 1))"
     ;;
   scale)
     [[ "${1:-}" == deployment ]] || exit 99
@@ -437,6 +471,37 @@ test "$(cat "$state/cm.phase")" = admin-initialized
 grep -q 'app.kubernetes.io/component: admin-init' "$state/yaml.log"
 ! grep -Eqi '(password|token|secret)[=:]' "$state/kubectl.log"
 
+# If init committed but the ConfigMap patch was lost, the helper converges from database truth.
+state="$(new_state admin-helper-lost-patch stopped-empty)"
+run_update "$state" --execute "${reset_common[@]}" \
+  --confirm-context nzfklii-kite --confirm-execute "$reset_execute_confirmation" \
+  --confirm-reset-empty "$reset_confirmation" --confirm-backup "$backup_confirmation"
+test "$RUN_STATUS" = 75
+put admin_initialized "$state" 1
+: >"$state/kubectl.log"; : >"$state/yaml.log"
+run_admin_init "$state" --namespace kaoyan-pomodoro --main-sha "$new_sha" \
+  --confirm-context nzfklii-kite \
+  --confirm-init "INITIALIZE ADMIN IN kaoyan-pomodoro ON nzfklii-kite FOR $new_sha"
+test "$RUN_STATUS" = 0
+grep -q 'already exists' <<<"$RUN_OUTPUT"
+test "$(cat "$state/cm.phase")" = admin-initialized
+grep -q 'app.kubernetes.io/component: admin-status' "$state/yaml.log"
+grep -Fq 'command: ["node", "dist/cli/account.js", "status"]' "$state/yaml.log"
+grep -q 'readOnly: true' "$state/yaml.log"
+grep -q 'automountServiceAccountToken: false' "$state/yaml.log"
+grep -q 'allowPrivilegeEscalation: false' "$state/yaml.log"
+grep -q 'drop: \["ALL"\]' "$state/yaml.log"
+grep -q 'deploy.sagirii.me/node-id: guilyrh' "$state/yaml.log"
+grep -q 'deploy.sagirii.me/edge' "$state/yaml.log"
+! grep -qi 'hostPath' "$state/yaml.log"
+! grep -q 'app.kubernetes.io/component: admin-init' "$state/yaml.log"
+! grep -q ' attach ' "$state/kubectl.log"
+: >"$state/kubectl.log"
+run_update "$state" --resume --namespace kaoyan-pomodoro \
+  --confirm-context nzfklii-kite --confirm-execute "$reset_execute_confirmation"
+test "$RUN_STATUS" = 0
+test "$(cat "$state/cm.phase")" = completed
+
 # Administrator completion is detected from the database even if the helper-state patch was lost.
 state="$scratch/states/admin-pause"
 put admin_initialized "$state" 1
@@ -492,6 +557,48 @@ test "$(cat "$state/api_replicas")" = 1
 test "$(cat "$state/web_replicas")" = 1
 test "$(cat "$state/cron_suspend")" = false
 ! grep -Eq ' (patch|scale|set) ' "$state/kubectl.log"
+test ! -f "$state/configmap.exists"
+
+# A failed preserve backup is retained and the persisted retry advances on Resume.
+state="$(new_state backup-failed-retry healthy)"
+put backup_job_fail_once "$state" 1
+run_update "$state" --execute "${common[@]}" --migration-check-passed \
+  --confirm-context nzfklii-kite --confirm-execute "$preserve_confirmation"
+test "$RUN_STATUS" -ne 0
+grep -q 'pre-update backup Job.*failed' <<<"$RUN_OUTPUT"
+test "$(cat "$state/api_replicas")" = 0
+test "$(cat "$state/web_replicas")" = 0
+test "$(cat "$state/cron_suspend")" = true
+base_backup_job="kaoyan-backup-pre-update-${new_sha:0:12}"
+retry_backup_job="${base_backup_job}-retry-1"
+test "$(cat "$state/cm.backupJob")" = "$retry_backup_job"
+test "$(cat "$state/cm.backupAttempt")" = 1
+grep -qw "$base_backup_job" "$state/cm.failedBackupJobs"
+test "$(cat "$state/job.$base_backup_job.failed")" = True
+! grep -q 'wait --for=condition=complete' "$state/kubectl.log"
+: >"$state/kubectl.log"
+run_update "$state" --resume --namespace kaoyan-pomodoro \
+  --confirm-context nzfklii-kite --confirm-execute "$preserve_confirmation"
+test "$RUN_STATUS" = 0
+test "$(cat "$state/job.$retry_backup_job.succeeded")" = 1
+test "$(cat "$state/job.$base_backup_job.failed")" = True
+! grep -q "create job --from=cronjob/kaoyan-backup $base_backup_job" "$state/kubectl.log"
+grep -q "create job --from=cronjob/kaoyan-backup $retry_backup_job" "$state/kubectl.log"
+grep -q 'set image deployment/kaoyan-api' "$state/kubectl.log"
+test "$(cat "$state/cm.phase")" = completed
+
+# A live Lease owned by another terminal rejects execution before any workload mutation.
+state="$(new_state concurrent-lock healthy)"
+touch "$state/lease.exists"
+put lease.holder "$state" other-terminal
+put lease.expires "$state" 4102444800
+put lease.resourceVersion "$state" 7
+run_update "$state" --execute "${common[@]}" --migration-check-passed \
+  --confirm-context nzfklii-kite --confirm-execute "$preserve_confirmation"
+test "$RUN_STATUS" = 73
+grep -q 'another update process holds Lease' <<<"$RUN_OUTPUT"
+! grep -Eq ' (patch|scale|set) (deployment|cronjob)' "$state/kubectl.log"
+! grep -q 'app.kubernetes.io/component: update-pull-' "$state/yaml.log" 2>/dev/null
 test ! -f "$state/configmap.exists"
 
 # Migration and readiness failures enforce the stopped/suspended failure boundary.

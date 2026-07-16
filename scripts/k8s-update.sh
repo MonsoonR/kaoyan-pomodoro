@@ -9,6 +9,7 @@ readonly TAINT_KEY="deploy.sagirii.me/edge"
 readonly PRODUCTION_ORIGIN="https://pomodoro.losenone.cn"
 readonly STATE_CONFIGMAP="kaoyan-update-state"
 readonly STATE_SCHEMA_VERSION="1"
+readonly OPERATION_LEASE="kaoyan-update-operation-lock"
 
 action="plan"
 action_selected=0
@@ -29,6 +30,9 @@ record_file=""
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 POLL_ATTEMPTS="${K8S_UPDATE_POLL_ATTEMPTS:-90}"
 POLL_DELAY_SECONDS="${K8S_UPDATE_POLL_DELAY_SECONDS:-2}"
+BACKUP_POLL_ATTEMPTS="${K8S_UPDATE_BACKUP_POLL_ATTEMPTS:-900}"
+BACKUP_POLL_DELAY_SECONDS="${K8S_UPDATE_BACKUP_POLL_DELAY_SECONDS:-2}"
+LOCK_TTL_SECONDS="${K8S_UPDATE_LOCK_TTL_SECONDS:-900}"
 
 usage() {
   cat <<'EOF'
@@ -71,6 +75,7 @@ Safety properties:
   * reset-empty only accepts a PVC where kaoyan.sqlite, WAL and SHM are absent.
     This script never deletes those database files.
   * After write freeze, every failure leaves API/Web at 0 and Backup suspended.
+  * Execute and Resume hold a namespace Lease; a second terminal cannot mutate workloads.
   * There is no automatic image rollback, SQLite restore or down migration.
   * No Secret object is read. Passwords are handled only by k8s-admin-init.sh.
 EOF
@@ -116,6 +121,9 @@ done
 [[ "$database_mode" == "preserve" || "$database_mode" == "reset-empty" ]] || die "--database-mode must be preserve or reset-empty"
 [[ "$POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "K8S_UPDATE_POLL_ATTEMPTS must be a positive integer"
 [[ "$POLL_DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "K8S_UPDATE_POLL_DELAY_SECONDS must be a non-negative number"
+[[ "$BACKUP_POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "K8S_UPDATE_BACKUP_POLL_ATTEMPTS must be a positive integer"
+[[ "$BACKUP_POLL_DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "K8S_UPDATE_BACKUP_POLL_DELAY_SECONDS must be a non-negative number"
+[[ "$LOCK_TTL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "K8S_UPDATE_LOCK_TTL_SECONDS must be a positive integer"
 
 validate_backup_filename() {
   [[ -n "$backup_file" ]] || die "--backup-file is required with --database-mode reset-empty"
@@ -212,6 +220,13 @@ web_pod_count="$(line_count "$web_pods")"
 state_name="$(safe_get get configmap "$STATE_CONFIGMAP" -o name --ignore-not-found)"
 state_exists=0
 [[ -n "$state_name" ]] && state_exists=1
+lease_name="$(safe_get get lease "$OPERATION_LEASE" -o name --ignore-not-found)"
+lease_holder=""
+lease_expires=""
+if [[ -n "$lease_name" ]]; then
+  lease_holder="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.spec.holderIdentity}')"
+  lease_expires="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.annotations.kaoyan\.losenone\.cn/expires-at-epoch}')"
+fi
 read_state_field() {
   local field="$1"
   if (( state_exists )); then
@@ -232,6 +247,8 @@ state_web_replicas="$(read_state_field desiredWebReplicas)"
 state_final_cron_suspend="$(read_state_field finalCronSuspend)"
 state_database_status="$(read_state_field databaseStatus)"
 state_backup_job="$(read_state_field backupJob)"
+state_backup_attempt="$(read_state_field backupAttempt)"
+state_failed_backup_jobs="$(read_state_field failedBackupJobs)"
 
 database_files="unknown-no-running-api-pod"
 if [[ -n "$api_pods" ]]; then
@@ -260,6 +277,9 @@ Kubernetes production update status (read only).
   state phase: ${state_phase:-<none>}
   state target main SHA: ${state_main_sha:-<none>}
   state database mode: ${state_database_mode:-<none>}
+  state backup Job / attempt: ${state_backup_job:-<none>} / ${state_backup_attempt:-0}
+  state failed backup Jobs: ${state_failed_backup_jobs:-<none>}
+  operation Lease owner / expiry epoch: ${lease_holder:-<none>} / ${lease_expires:-<none>}
   API image: $api_current_image
   Web image: $web_current_image
   Backup image: $backup_current_image
@@ -425,6 +445,7 @@ EOF
     cat <<'EOF'
   3. Suspend Backup, stop Web and API, and wait for all application Pods to exit.
   4. Create one deterministic pre-update Job and require its validated backup to succeed.
+     Failed Jobs remain as audit evidence; Resume uses the persisted deterministic retry name.
   5. Update the API, Web and Backup images while application writes remain stopped.
   6. Start API first; wait for migrations, rollout, node placement and readiness.
   7. Start Web only after API is ready; then verify HTTPS and Certificate readiness.
@@ -503,6 +524,79 @@ temp_pods=()
 freeze_started=0
 completed=0
 state_writable=0
+lock_acquired=0
+lock_holder="${main_sha}:${action}:${timestamp}"
+
+render_operation_lease() {
+  local resource_version="$1" holder="$2" expires_epoch="$3" resource_version_line=""
+  [[ -z "$resource_version" ]] || resource_version_line="  resourceVersion: \"$resource_version\""
+  cat <<EOF
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: $OPERATION_LEASE
+  annotations:
+    kaoyan.losenone.cn/expires-at-epoch: "$expires_epoch"
+$resource_version_line
+spec:
+  holderIdentity: "$holder"
+  leaseDurationSeconds: $LOCK_TTL_SECONDS
+  acquireTime: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  renewTime: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+EOF
+}
+
+acquire_operation_lock() {
+  local now expires existing holder resource_version
+  now="$(date +%s)"
+  expires="$((now + LOCK_TTL_SECONDS))"
+  if render_operation_lease "" "$lock_holder" "$expires" | k create -f - >/dev/null 2>&1; then
+    lock_acquired=1
+    echo "Acquired operation Lease/$OPERATION_LEASE as $lock_holder (expires epoch $expires)."
+    return 0
+  fi
+
+  existing="$(safe_get get lease "$OPERATION_LEASE" -o name --ignore-not-found)"
+  [[ -n "$existing" ]] || { echo "ERROR: could not create or inspect Lease/$OPERATION_LEASE" >&2; return 73; }
+  holder="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.spec.holderIdentity}')"
+  expires="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.annotations.kaoyan\.losenone\.cn/expires-at-epoch}')"
+  resource_version="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.resourceVersion}')"
+  if [[ -n "$holder" && ( ! "$expires" =~ ^[0-9]+$ || "$now" -lt "$expires" ) ]]; then
+    echo "ERROR: another update process holds Lease/$OPERATION_LEASE (owner=$holder, expiresEpoch=${expires:-unknown})." >&2
+    return 73
+  fi
+  if ! render_operation_lease "$resource_version" "$lock_holder" "$((now + LOCK_TTL_SECONDS))" | k replace -f - >/dev/null 2>&1; then
+    echo "ERROR: Lease/$OPERATION_LEASE changed while taking over an expired lock; retry the command." >&2
+    return 73
+  fi
+  lock_acquired=1
+  echo "Took over expired operation Lease/$OPERATION_LEASE as $lock_holder."
+}
+
+renew_operation_lock() {
+  local holder resource_version now
+  (( lock_acquired )) || return 0
+  holder="$(k get lease "$OPERATION_LEASE" -o 'jsonpath={.spec.holderIdentity}')" || return 1
+  [[ "$holder" == "$lock_holder" ]] || { echo "ERROR: operation Lease ownership was lost to '$holder'" >&2; return 1; }
+  resource_version="$(k get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.resourceVersion}')" || return 1
+  now="$(date +%s)"
+  render_operation_lease "$resource_version" "$lock_holder" "$((now + LOCK_TTL_SECONDS))" | k replace -f - >/dev/null
+}
+
+release_operation_lock() {
+  local holder resource_version
+  (( lock_acquired )) || return 0
+  holder="$(k get lease "$OPERATION_LEASE" -o 'jsonpath={.spec.holderIdentity}' 2>/dev/null)" || return 1
+  if [[ "$holder" != "$lock_holder" ]]; then
+    echo "WARNING: not releasing Lease/$OPERATION_LEASE because its owner is now '$holder'." >&2
+    lock_acquired=0
+    return 1
+  fi
+  resource_version="$(k get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.resourceVersion}' 2>/dev/null)" || return 1
+  render_operation_lease "$resource_version" "" 0 | k replace -f - >/dev/null || return 1
+  lock_acquired=0
+  echo "Released operation Lease/$OPERATION_LEASE."
+}
 
 cleanup_temp_pods() {
   local pod
@@ -538,9 +632,11 @@ on_exit() {
     echo "No image rollback, SQLite restore or down migration was attempted." >&2
     echo "Resume from ConfigMap/$STATE_CONFIGMAP; no /tmp file is required." >&2
   fi
+  release_operation_lock || echo "WARNING: Lease/$OPERATION_LEASE will remain until its recorded expiry." >&2
   exit "$status"
 }
 trap on_exit EXIT
+acquire_operation_lock
 
 wait_for_pod_success() {
   local pod="$1" purpose="$2" phase i
@@ -554,10 +650,55 @@ wait_for_pod_success() {
         return 1
         ;;
     esac
+    if (( i % 60 == 0 )); then
+      renew_operation_lock || return 1
+    fi
     (( i < POLL_ATTEMPTS )) && sleep "$POLL_DELAY_SECONDS"
   done
   echo "ERROR: $purpose Pod $pod timed out" >&2
   return 1
+}
+
+wait_for_backup_job() {
+  local job="$1" complete failed succeeded i
+  for ((i = 1; i <= BACKUP_POLL_ATTEMPTS; i++)); do
+    complete="$(safe_get get job "$job" -o 'jsonpath={.status.conditions[?(@.type=="Complete")].status}')"
+    failed="$(safe_get get job "$job" -o 'jsonpath={.status.conditions[?(@.type=="Failed")].status}')"
+    if [[ "$failed" == "True" ]]; then
+      return 2
+    fi
+    if [[ "$complete" == "True" ]]; then
+      succeeded="$(safe_get get job "$job" -o 'jsonpath={.status.succeeded}')"
+      [[ "$succeeded" == "1" ]] || { echo "ERROR: completed backup Job $job has succeeded=$succeeded" >&2; return 1; }
+      return 0
+    fi
+    if (( i % 60 == 0 )); then
+      renew_operation_lock || return 1
+    fi
+    (( i < BACKUP_POLL_ATTEMPTS )) && sleep "$BACKUP_POLL_DELAY_SECONDS"
+  done
+  echo "ERROR: pre-update backup Job $job is still running after the polling window; Resume will continue watching the same Job." >&2
+  return 1
+}
+
+record_failed_backup_and_retry() {
+  local failed_job="$1" attempt failed_jobs next_job base_job
+  attempt="${state_backup_attempt:-0}"
+  [[ "$attempt" =~ ^[0-9]+$ ]] || { echo "ERROR: persistent backupAttempt is invalid: '$attempt'" >&2; return 1; }
+  failed_jobs="$state_failed_backup_jobs"
+  case " $failed_jobs " in
+    *" $failed_job "*) ;;
+    *) failed_jobs="${failed_jobs:+$failed_jobs }$failed_job" ;;
+  esac
+  attempt="$((attempt + 1))"
+  base_job="kaoyan-backup-pre-update-${main_sha:0:12}"
+  next_job="${base_job}-retry-${attempt}"
+  state_patch "\"backupJob\":\"$next_job\",\"backupAttempt\":\"$attempt\",\"failedBackupJobs\":\"$failed_jobs\""
+  state_backup_job="$next_job"
+  state_backup_attempt="$attempt"
+  state_failed_backup_jobs="$failed_jobs"
+  echo "ERROR: pre-update backup Job $failed_job failed; it was preserved for audit." >&2
+  echo "A deterministic retry was persisted as $next_job. Inspect the failed Job, fix the cause, then run the same --resume command." >&2
 }
 
 render_pull_pod() {
@@ -786,7 +927,7 @@ ensure_state_object() {
 begin_state() {
   local desired_api="$1" desired_web="$2" final_suspend="$3" initial_phase="$4" database_status="$5"
   ensure_state_object
-  state_patch "\"schemaVersion\":\"$STATE_SCHEMA_VERSION\",\"phase\":\"$initial_phase\",\"mainSha\":\"$main_sha\",\"databaseMode\":\"$database_mode\",\"backupFile\":\"$backup_file\",\"apiImage\":\"$api_image\",\"webImage\":\"$web_image\",\"backupImage\":\"$backup_image\",\"desiredApiReplicas\":\"$desired_api\",\"desiredWebReplicas\":\"$desired_web\",\"finalCronSuspend\":\"$final_suspend\",\"databaseStatus\":\"$database_status\",\"backupJob\":\"\",\"lastResult\":\"in-progress\""
+  state_patch "\"schemaVersion\":\"$STATE_SCHEMA_VERSION\",\"phase\":\"$initial_phase\",\"mainSha\":\"$main_sha\",\"databaseMode\":\"$database_mode\",\"backupFile\":\"$backup_file\",\"apiImage\":\"$api_image\",\"webImage\":\"$web_image\",\"backupImage\":\"$backup_image\",\"desiredApiReplicas\":\"$desired_api\",\"desiredWebReplicas\":\"$desired_web\",\"finalCronSuspend\":\"$final_suspend\",\"databaseStatus\":\"$database_status\",\"backupJob\":\"\",\"backupAttempt\":\"0\",\"failedBackupJobs\":\"\",\"lastResult\":\"in-progress\""
   state_phase="$initial_phase"
   state_api_replicas="$desired_api"
   state_web_replicas="$desired_web"
@@ -854,13 +995,25 @@ fi
 
 if [[ "$database_mode" == "preserve" && ( "$state_phase" == "write-frozen" || "$state_phase" == "preflight-complete" ) ]]; then
   backup_job="${state_backup_job:-kaoyan-backup-pre-update-${main_sha:0:12}}"
+  if [[ -z "$state_backup_job" ]]; then
+    state_backup_attempt="${state_backup_attempt:-0}"
+    state_patch "\"backupJob\":\"$backup_job\",\"backupAttempt\":\"$state_backup_attempt\""
+    state_backup_job="$backup_job"
+  fi
   existing_job="$(safe_get get job "$backup_job" -o name --ignore-not-found)"
   if [[ -z "$existing_job" ]]; then
     k create job --from=cronjob/kaoyan-backup "$backup_job" >/dev/null
   fi
-  k wait --for=condition=complete --timeout=1800s "job/$backup_job" >/dev/null
-  require_equal "pre-update backup Job succeeded count" "$(safe_get get job "$backup_job" -o 'jsonpath={.status.succeeded}')" "1"
-  state_patch "\"backupJob\":\"$backup_job\""
+  if wait_for_backup_job "$backup_job"; then
+    :
+  else
+    backup_wait_status=$?
+    if [[ "$backup_wait_status" == "2" ]]; then
+      record_failed_backup_and_retry "$backup_job"
+      exit 70
+    fi
+    exit "$backup_wait_status"
+  fi
   set_phase backup-verified
   echo "Verified pre-update backup Job: $backup_job"
 fi
@@ -902,8 +1055,9 @@ if [[ "$database_mode" == "reset-empty" ]]; then
     if [[ "$account_status" != "initialized" ]]; then
       require_equal "administrator status" "$account_status" "not-initialized"
       set_phase awaiting-admin-init
-      trap - EXIT
       cleanup_temp_pods
+      release_operation_lock || echo "WARNING: Lease/$OPERATION_LEASE will remain until its recorded expiry." >&2
+      trap - EXIT
       cat <<EOF
 PAUSED SAFELY: migrations completed, but no administrator is initialized.
 API/Web remain at 0 and Backup remains suspended.
@@ -956,8 +1110,9 @@ require_equal "final Backup CronJob suspend" "$(safe_get get cronjob kaoyan-back
 set_phase completed
 state_patch '"lastResult":"success"'
 completed=1
-trap - EXIT
 cleanup_temp_pods
+release_operation_lock || echo "WARNING: Lease/$OPERATION_LEASE will remain until its recorded expiry." >&2
+trap - EXIT
 
 echo "Kubernetes production update completed for main commit $main_sha."
 echo "Persistent state: ConfigMap/$STATE_CONFIGMAP (phase=completed)."

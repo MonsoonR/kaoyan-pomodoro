@@ -68,7 +68,7 @@ bash scripts/k8s-update.sh --execute \
   --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
 ```
 
-脚本在停写前完成镜像拉取检查；随后挂起 Backup，停止 Web 和 API，创建确定名称且可复用的升级前 Backup Job，切换三张镜像，先启动 API 并等待 migrations/rollout/readiness，再启动 Web、验证 HTTPS，最后恢复原 CronJob suspend 状态。只停 Web 不构成停写。
+脚本先取得 `Lease/kaoyan-update-operation-lock`，再在停写前完成镜像拉取检查；随后挂起 Backup，停止 Web 和 API，创建确定名称且可复用的升级前 Backup Job，切换三张镜像，先启动 API 并等待 migrations/rollout/readiness，再启动 Web、验证 HTTPS，最后恢复原 CronJob suspend 状态。只停 Web 不构成停写。Job 检查同时读取 `Complete` 和 `Failed`：成功 Job复用且保留；失败 Job立即停止流程并保留审计记录，ConfigMap 先写入确定性的 `-retry-N` Job名称，下一次 `--resume` 才创建该重试。
 
 ## 4. 当前空库现场的一次性重建
 
@@ -103,7 +103,7 @@ bash scripts/k8s-admin-init.sh \
   --confirm-init 'INITIALIZE ADMIN IN kaoyan-pomodoro ON nzfklii-kite FOR <未来最终MAIN_SHA>'
 ```
 
-辅助脚本从持久状态读取目标 API 镜像，在挂载 `kaoyan-data` 的一次性 TTY Pod 中运行 `node dist/cli/account.js init`。不要把用户名或密码追加到命令行，也不要通过 env、ConfigMap、Secret 或重定向日志传入。密码只在 TTY 隐藏输入。成功后状态变为 `admin-initialized`，但 API/Web 仍保持 0。
+辅助脚本从持久状态读取目标 API 镜像，先用只读挂载 `kaoyan-data` 的受限 Pod运行 `node dist/cli/account.js status`。如果数据库已是 `initialized`，helper 不创建或 attach init Pod，直接把丢失的阶段 patch 收敛为 `admin-initialized` 并退出 0；只有返回 `not-initialized` 才在一次性 TTY Pod 中运行 `node dist/cli/account.js init`。不要把用户名或密码追加到命令行，也不要通过 env、ConfigMap、Secret 或重定向日志传入。密码只在 TTY 隐藏输入。成功后状态变为 `admin-initialized`，但 API/Web 仍保持 0。
 
 ## 6. 中断续跑
 
@@ -116,7 +116,9 @@ bash scripts/k8s-update.sh --resume \
   --confirm-execute 'UPDATE kaoyan-pomodoro ON nzfklii-kite TO <MAIN_SHA> USING <preserve或reset-empty>'
 ```
 
-Resume 会复用确定名称的升级前 Job 或 migration Pod，比较镜像后再决定是否 set image，比较副本后再决定是否 scale，并从数据库事实判断管理员是否已经初始化。支持以下恢复点：正常更新停写后、空库 migration 后等待管理员、API 已就绪但 Web 尚未启动、HTTPS 已通过但 CronJob 尚未恢复。已完成且资源一致时重复 resume 是无写入 no-op。
+Resume 会复用状态中记录的升级前 Job 或 migration Pod，比较镜像后再决定是否 set image，比较副本后再决定是否 scale，并从数据库事实判断管理员是否已经初始化。失败备份不会被删除或伪装成功；状态中的 `backupJob` 是当前应等待或创建的 Job，`backupAttempt` 和 `failedBackupJobs` 提供审计链。支持以下恢复点：正常更新停写后、备份失败后的确定性重试、空库 migration 后等待管理员、API 已就绪但 Web 尚未启动、HTTPS 已通过但 CronJob 尚未恢复。已完成且资源一致时重复 resume 是无写入 no-op。
+
+所有会写资源的入口共享带 owner、过期 epoch 和 `resourceVersion` 的 Kubernetes Lease。第二个并发 `--execute`/`--resume` 在修改工作负载前以退出码 73 拒绝；不要把 `/tmp` 文件锁当作替代。若 Kite 异常断开，确认原进程已消失并等待 Lease 的记录过期后，再运行同一条 Resume。
 
 ## 7. 验收
 
@@ -136,6 +138,8 @@ SQLite schema 没有安全原地 down migration。
 
 - 镜像拉取失败在停写前结束，不改变 Deployment/CronJob；其余任一步失败都把 API/Web 保持为 0、Backup 保持 suspended。
 - 管理员未初始化不是回滚条件；保持维护状态，完成一次性初始化后 `--resume`。
+- preserve 备份 Job出现 `Failed=True` 时先调查保留的失败 Job；修复原因后运行同一条 `--resume`，脚本只创建 ConfigMap 已记录的确定性重试 Job，不复用永远失败的旧 Job。
+- 若更新 Lease 仍由另一个未过期 owner 持有，不要删除对方 Pod或强行覆盖阶段；确认该终端和过期时间后再重试。
 - 不自动执行 `kubectl rollout undo`，不自动切回旧镜像，不自动恢复旧 SQLite。
 - 保存持久阶段、升级前 Job名称和失败现场，在备份副本上定位问题并优先形成向前修复方案。
 - 若决定回旧版本，必须单独审核“旧应用镜像 + 匹配的旧数据库”整体恢复；只换旧镜像会把升级后的 schema 暴露给旧代码。

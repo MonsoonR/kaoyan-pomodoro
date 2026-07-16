@@ -7,6 +7,7 @@ readonly REQUIRED_NODE="guilyrh"
 readonly NODE_LABEL_KEY="deploy.sagirii.me/node-id"
 readonly TAINT_KEY="deploy.sagirii.me/edge"
 readonly STATE_CONFIGMAP="kaoyan-update-state"
+readonly OPERATION_LEASE="kaoyan-update-operation-lock"
 
 namespace="$PRODUCTION_NAMESPACE"
 main_sha=""
@@ -15,6 +16,7 @@ init_confirmation=""
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 POLL_ATTEMPTS="${K8S_ADMIN_POLL_ATTEMPTS:-180}"
 POLL_DELAY_SECONDS="${K8S_ADMIN_POLL_DELAY_SECONDS:-2}"
+LOCK_TTL_SECONDS="${K8S_ADMIN_LOCK_TTL_SECONDS:-1800}"
 
 usage() {
   cat <<'EOF'
@@ -53,6 +55,7 @@ done
 [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || die "--main-sha must be a full 40-character main commit"
 [[ "$POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "K8S_ADMIN_POLL_ATTEMPTS must be a positive integer"
 [[ "$POLL_DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "K8S_ADMIN_POLL_DELAY_SECONDS must be non-negative"
+[[ "$LOCK_TTL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "K8S_ADMIN_LOCK_TTL_SECONDS must be a positive integer"
 command -v "$KUBECTL_BIN" >/dev/null 2>&1 || die "kubectl is required"
 
 k() { "$KUBECTL_BIN" --namespace "$namespace" "$@"; }
@@ -103,7 +106,61 @@ active_jobs="$(safe_get get cronjob kaoyan-backup -o 'jsonpath={.status.active[*
 [[ -z "$active_jobs" ]] || { echo "ERROR: Backup CronJob has active Job(s): $active_jobs" >&2; exit 69; }
 require_equal "data PVC phase" "$(safe_get get pvc kaoyan-data -o 'jsonpath={.status.phase}')" "Bound"
 
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+lock_holder="${main_sha}:admin-init:${timestamp}"
+lock_acquired=0
+render_operation_lease() {
+  local resource_version="$1" holder="$2" expires_epoch="$3" resource_version_line=""
+  [[ -z "$resource_version" ]] || resource_version_line="  resourceVersion: \"$resource_version\""
+  cat <<EOF
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: $OPERATION_LEASE
+  annotations:
+    kaoyan.losenone.cn/expires-at-epoch: "$expires_epoch"
+$resource_version_line
+spec:
+  holderIdentity: "$holder"
+  leaseDurationSeconds: $LOCK_TTL_SECONDS
+  acquireTime: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  renewTime: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+EOF
+}
+acquire_operation_lock() {
+  local now expires existing holder resource_version
+  now="$(date +%s)"; expires="$((now + LOCK_TTL_SECONDS))"
+  if render_operation_lease "" "$lock_holder" "$expires" | k create -f - >/dev/null 2>&1; then
+    lock_acquired=1
+    return 0
+  fi
+  existing="$(safe_get get lease "$OPERATION_LEASE" -o name --ignore-not-found)"
+  [[ -n "$existing" ]] || { echo "ERROR: could not create or inspect Lease/$OPERATION_LEASE" >&2; return 73; }
+  holder="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.spec.holderIdentity}')"
+  expires="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.annotations.kaoyan\.losenone\.cn/expires-at-epoch}')"
+  resource_version="$(safe_get get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.resourceVersion}')"
+  if [[ -n "$holder" && ( ! "$expires" =~ ^[0-9]+$ || "$now" -lt "$expires" ) ]]; then
+    echo "ERROR: another update process holds Lease/$OPERATION_LEASE (owner=$holder, expiresEpoch=${expires:-unknown})." >&2
+    return 73
+  fi
+  render_operation_lease "$resource_version" "$lock_holder" "$((now + LOCK_TTL_SECONDS))" | k replace -f - >/dev/null 2>&1 || {
+    echo "ERROR: Lease/$OPERATION_LEASE changed while taking over an expired lock; retry." >&2
+    return 73
+  }
+  lock_acquired=1
+}
+release_operation_lock() {
+  local holder resource_version
+  (( lock_acquired )) || return 0
+  holder="$(k get lease "$OPERATION_LEASE" -o 'jsonpath={.spec.holderIdentity}' 2>/dev/null)" || return 1
+  [[ "$holder" == "$lock_holder" ]] || { lock_acquired=0; return 1; }
+  resource_version="$(k get lease "$OPERATION_LEASE" -o 'jsonpath={.metadata.resourceVersion}' 2>/dev/null)" || return 1
+  render_operation_lease "$resource_version" "" 0 | k replace -f - >/dev/null || return 1
+  lock_acquired=0
+}
+
 pod="kaoyan-admin-init-${main_sha:0:12}"
+status_pod="kaoyan-admin-status-${main_sha:0:12}"
 pod_created=0
 cleanup_failed_pod() {
   local status=$?
@@ -111,9 +168,113 @@ cleanup_failed_pod() {
   if (( status != 0 && pod_created )); then
     k delete pod "$pod" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   fi
+  k delete pod "$status_pod" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  release_operation_lock || true
   exit "$status"
 }
 trap cleanup_failed_pod EXIT
+
+if acquire_operation_lock; then :; else lock_status=$?; exit "$lock_status"; fi
+
+render_status_pod() {
+  cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $status_pod
+  labels:
+    app.kubernetes.io/name: kaoyan-pomodoro
+    app.kubernetes.io/component: admin-status
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 300
+  nodeSelector:
+    $NODE_LABEL_KEY: $REQUIRED_NODE
+  tolerations:
+    - key: $TAINT_KEY
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: account-status
+      image: $api_image
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: DATABASE_PATH
+          value: /var/lib/kaoyan/kaoyan.sqlite
+      command: ["node", "dist/cli/account.js", "status"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/kaoyan
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: kaoyan-data
+    - name: tmp
+      emptyDir: {}
+EOF
+}
+
+status_existing="$(safe_get get pod "$status_pod" -o name --ignore-not-found)"
+if [[ -n "$status_existing" ]]; then
+  require_equal "existing administrator status Pod image" "$(safe_get get pod "$status_pod" -o 'jsonpath={.spec.containers[0].image}')" "$api_image"
+  status_phase="$(safe_get get pod "$status_pod" -o 'jsonpath={.status.phase}')"
+  if [[ "$status_phase" == "Failed" ]]; then
+    k delete pod "$status_pod" --wait=true >/dev/null
+    status_existing=""
+  fi
+fi
+if [[ -z "$status_existing" ]]; then
+  render_status_pod | k create -f - >/dev/null
+fi
+for ((i = 1; i <= POLL_ATTEMPTS; i++)); do
+  status_phase="$(safe_get get pod "$status_pod" -o 'jsonpath={.status.phase}')"
+  case "$status_phase" in
+    Succeeded) break ;;
+    Failed) echo "ERROR: administrator status check failed; initialization was not attempted" >&2; exit 1 ;;
+  esac
+  (( i < POLL_ATTEMPTS )) && sleep "$POLL_DELAY_SECONDS"
+done
+require_equal "administrator status Pod phase" "$status_phase" "Succeeded"
+administrator_status="$(safe_get logs "$status_pod")"
+k delete pod "$status_pod" --ignore-not-found --wait=true >/dev/null
+case "$administrator_status" in
+  initialized)
+    k patch configmap "$STATE_CONFIGMAP" --type=merge \
+      -p '{"data":{"phase":"admin-initialized","databaseStatus":"administrator-initialized","lastResult":"in-progress"}}' >/dev/null
+    release_operation_lock || echo "WARNING: Lease/$OPERATION_LEASE will remain until its recorded expiry." >&2
+    trap - EXIT
+    cat <<EOF
+Administrator already exists in the database; interactive initialization was not run.
+Persistent phase converged to admin-initialized. API/Web remain stopped and Backup remains suspended.
+
+Continue with:
+  bash scripts/k8s-update.sh --resume --namespace $namespace \\
+    --confirm-context $current_context \\
+    --confirm-execute 'UPDATE $namespace ON $current_context TO $main_sha USING reset-empty'
+EOF
+    exit 0
+    ;;
+  not-initialized) ;;
+  *) echo "ERROR: unexpected administrator status: '$administrator_status'" >&2; exit 1 ;;
+esac
 
 render_admin_pod() {
   cat <<EOF
@@ -208,6 +369,7 @@ k patch configmap "$STATE_CONFIGMAP" --type=merge \
   -p '{"data":{"phase":"admin-initialized","databaseStatus":"administrator-initialized","lastResult":"in-progress"}}' >/dev/null
 k delete pod "$pod" --ignore-not-found --wait=true >/dev/null
 pod_created=0
+release_operation_lock || echo "WARNING: Lease/$OPERATION_LEASE will remain until its recorded expiry." >&2
 trap - EXIT
 
 cat <<EOF
