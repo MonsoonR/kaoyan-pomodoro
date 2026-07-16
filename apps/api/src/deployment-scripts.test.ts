@@ -34,7 +34,7 @@ describe('deployment maintenance scripts', () => {
     const result = shellRun();
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain('Deployment maintenance script tests passed');
-    expect(result.stdout).toContain('Kubernetes update script safety tests passed');
+    expect(result.stdout).toContain('Kubernetes update state-machine safety tests passed');
     expect(result.stdout).toContain('Kubernetes restore script safety tests passed');
     expect(result.stdout).toContain('Docker smoke infrastructure tests passed');
   }, 35_000);

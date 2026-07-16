@@ -41,13 +41,17 @@ describe('self-hosted deployment configuration', () => {
     expect(restore).toMatch(/integrity_check/);
   });
 
-  it('makes Kubernetes the default update entrypoint and requires explicit execution', () => {
+  it('makes Kubernetes the default resumable update entrypoint with safe execution', () => {
     const update = read('scripts/update.sh');
     const k8sUpdate = read('scripts/k8s-update.sh');
+    const adminInit = read('scripts/k8s-admin-init.sh');
     expect(update).toContain('scripts/k8s-update.sh');
     expect(update).not.toMatch(/docker compose/);
-    expect(k8sUpdate).toContain('mode="plan"');
-    expect(k8sUpdate).toMatch(/--execute requires --confirm-context/);
+    expect(k8sUpdate).toContain('action="plan"');
+    expect(k8sUpdate).toMatch(/--status/);
+    expect(k8sUpdate).toMatch(/--resume/);
+    expect(k8sUpdate).toContain('STATE_CONFIGMAP="kaoyan-update-state"');
+    expect(k8sUpdate).toMatch(/requires --confirm-context/);
     expect(k8sUpdate).toMatch(/--migration-check-passed/);
     expect(k8sUpdate).toMatch(/must not use latest/);
     expect(k8sUpdate).toMatch(/sha-\(\[0-9a-f\]\{40\}\)@sha256/);
@@ -57,7 +61,14 @@ describe('self-hosted deployment configuration', () => {
       k8sUpdate.indexOf('scale deployment kaoyan-api --replicas=0'),
     );
     expect(k8sUpdate).toMatch(/create job --from=cronjob\/kaoyan-backup/);
-    expect(k8sUpdate).toMatch(/No image rollback, database restore, or down migration was attempted/);
+    expect(k8sUpdate).toMatch(/No image rollback, SQLite restore or down migration was attempted/);
+    for (const script of [k8sUpdate, adminInit]) {
+      expect(script).toContain('automountServiceAccountToken: false');
+      expect(script).toContain('allowPrivilegeEscalation: false');
+      expect(script).toContain('drop: ["ALL"]');
+      expect(script).not.toContain('hostPath:');
+    }
+    expect(adminInit).toContain('dist/cli/account.js", "init"');
   });
 
   it('keeps Kubernetes database restore explicit, stopped, PVC-scoped and non-restarting', () => {

@@ -16,7 +16,7 @@
 - API、Web 和 Backup 固定到 `deploy.sagirii.me/node-id=guilyrh`
 - 三者容忍 `deploy.sagirii.me/edge=true:NoSchedule`
 
-部署清单的基准位于 `lose-af/losenone-deploy` 的 `feat/kaoyan-pomodoro`，当前生产状态基准提交为 `71eb512dc56ce0852428e5d95111ed4f4174e19c`。清单和真实集群状态都要核对；不得只依据其中一方猜测生产状态。
+部署清单位于独立的 `lose-af/losenone-deploy` 仓库。部署仓库提交、镜像 digest 和集群对象都是时点信息，每次更新前必须重新核对；不得把本文中的历史现场描述当成当前事实，也不得只依据清单或集群其中一方猜测另一方状态。
 
 API 启动时自动运行 Drizzle migration。SQLite 数据位于 `kaoyan-data`，Backup CronJob 同时挂载 `kaoyan-data` 和 `kaoyan-backups`，使用 SQLite `.backup`、完整性检查、gzip 校验、`flock` 和原子 rename。
 
@@ -34,14 +34,24 @@ ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<40位Git SHA>@sha256:<64位digest>
 
 部署仓库中的正式镜像引用也只能在 `main` 镜像真实发布并核对 digest 后修改。若集群由 Flux 或其他 GitOps 控制器协调，维护窗口前必须确认它不会在脚本执行期间把镜像、副本数或 CronJob 状态改回；GitOps 暂停和恢复必须遵循部署仓库的运维流程，不由本仓库脚本猜测或自动操作。
 
-## Kubernetes 更新脚本
+## Kubernetes 半自动更新状态机
 
-默认入口是 `scripts/update.sh`，它只转发到 `scripts/k8s-update.sh`。不带 `--execute` 时脚本只做只读预检并输出计划。
+正式入口是 `scripts/k8s-update.sh`；`scripts/update.sh` 仅保留为兼容转发。固定生产 context 是 `nzfklii-kite`，脚本在任何模式下发现其他 context 都会拒绝。状态机不读取 Secret，也不操作 Flux、DNS、PVC 对象或 Ingress 配置。
 
-在 Kite Kubectl Terminal 中先填写三张已经发布的完整引用：
+### 只读状态与 Plan
+
+查看当前资源和持久阶段：
 
 ```bash
-bash scripts/update.sh --plan \
+bash scripts/k8s-update.sh --status --namespace kaoyan-pomodoro
+```
+
+`--status` 显示 ConfigMap 状态阶段、三张镜像、副本/available/Pod 数、CronJob、PVC、Certificate 和数据库证据。API 正在运行时，脚本通过只读 `exec` 检查主文件、WAL 和 SHM；API 为 0 且还没有持久状态时，Kubernetes API 无法直接查看 PVC 文件，因此会明确显示 `unknown-no-running-api-pod`，而不会为了“只读”创建检查 Pod。
+
+日常保留数据库更新的 Plan：
+
+```bash
+bash scripts/k8s-update.sh --plan \
   --namespace kaoyan-pomodoro \
   --main-sha <MAIN_SHA> \
   --api-image 'ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<MAIN_SHA>@sha256:<API_DIGEST>' \
@@ -49,43 +59,47 @@ bash scripts/update.sh --plan \
   --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
 ```
 
-Plan 会检查并记录：
+`--status` 和 `--plan` 都不得运行 `create`、`delete`、`patch`、`scale`、`set image`、`apply` 或 `rollout`。Plan 仅根据 Kubernetes API、正在运行的 API Pod 和已有 `kaoyan-update-state` ConfigMap 判断是新日常更新、空库重建候选、未完成续跑或已完成目标。
 
-- 当前 kubectl context 和固定 Namespace；
-- API/Web 是否健康，API 是否单副本和 `Recreate`；
-- Deployment、CronJob、PVC、Ingress、Certificate 是否存在；
-- 两个 PVC 是否 `Bound`，Certificate 是否 `Ready`；
-- Ingress 是否由 Traefik 服务正式域名；
-- API、Web、Backup 模板的 node affinity 与 taint toleration；
-- 当前 API/Web Pod 是否位于 `guilyrh`；
-- Backup CronJob 是否有活动 Job、上次调度/成功时间和 `suspend` 状态；
-- 三张旧镜像完整引用、API/Web 副本数和目标镜像。
+### 持久状态与幂等恢复
 
-Plan 不运行 `apply`、`patch`、`scale`、`set image`、`rollout`、`create` 或 `delete`。
+正式执行在 Namespace 中维护 `ConfigMap/kaoyan-update-state`。它只保存非敏感的目标 SHA、三张 digest-pinned 镜像、数据库模式、备份文件名、目标副本数、最终 CronJob suspend 值和阶段；密码、Token、Cookie、邀请码、kubeconfig 和 Secret 内容不得进入该对象。`/tmp` 或可选的 `--record-file` 都不是恢复依据。
 
-## 上线前门禁
+主要阶段如下：
 
-执行模式前必须全部满足：
+| 阶段 | 含义 | 可重复行为 |
+| --- | --- | --- |
+| `preflight-complete` | preserve 拉取检查完成，尚未停写 | 可重新挂起并停写 |
+| `write-frozen` | API/Web 已停、Backup 已挂起 | 复用确定名称的升级前 Job |
+| `backup-verified` / `reset-verified` | 日常备份成功，或空库与安全备份已验证 | 不重复备份或删库 |
+| `images-updated` | 三张目标镜像已写入 | 重复 set 前先比较真实引用 |
+| `migration-completed` | 空库已用新 API 镜像完成 migrations | 迁移 Pod 可安全幂等重跑 |
+| `awaiting-admin-init` | 等待 TTY 内一次性管理员初始化 | API/Web 保持 0 |
+| `admin-initialized` | 数据库已确认存在管理员 | 可继续启动 API |
+| `api-started` / `web-started` | API 已先就绪，Web 随后就绪 | 按真实副本和 readiness 收敛 |
+| `health-verified` | HTTPS 已通过，尚待恢复 Backup | 只补最后阶段 |
+| `completed` | 工作负载、HTTPS 和 CronJob 均完成 | 健康重复 resume 是无写入 no-op |
 
-1. 多用户改动已合并到应用仓库 `main`，三张正式镜像已发布并取得真实 digest。
-2. lint、typecheck、unit/integration、build、Drizzle check 和脚本测试通过。
-3. migrations `0007`—`0009` 已在最新已验证生产备份的离线副本上完整演练；升级后 `integrity_check=ok`、`foreign_key_check` 无结果、旧管理员及关键记录计数正确。
-4. API 当前单副本且策略为 `Recreate`，API/Web 健康，Backup 没有活动 Job。
-5. 两个 PVC `Bound`，Certificate `Ready`，三个工作负载都固定到 `guilyrh` 并包含既定 toleration。
-6. 已准备短维护窗口、通知、操作者、复核人和人工失败处置方案。
-7. 已确认 GitOps 不会与维护窗口内的 kubectl 变更竞争。
-
-`--migration-check-passed` 是操作者对第 3 项的显式确认，不会替代离线演练。`--confirm-context` 必须逐字等于 `kubectl config current-context`，防止在错误集群执行。脚本显示完整 Plan 和旧镜像后，还要求 `--confirm-execute` 逐字匹配它打印的第二次确认字符串。
-
-## 执行顺序
-
-确认 Plan 后才允许增加 `--execute`：
+Kite Terminal 断开后使用状态对象续跑，无需本地文件，也可以不再重复提供镜像参数：
 
 ```bash
-bash scripts/update.sh --execute \
+bash scripts/k8s-update.sh --resume \
   --namespace kaoyan-pomodoro \
-  --confirm-context '<PLAN显示的context>' \
-  --confirm-execute 'UPDATE kaoyan-pomodoro ON <PLAN显示的context> TO <MAIN_SHA>' \
+  --confirm-context nzfklii-kite \
+  --confirm-execute 'UPDATE kaoyan-pomodoro ON nzfklii-kite TO <MAIN_SHA> USING <preserve或reset-empty>'
+```
+
+`--execute`、未完成的 `--resume` 和管理员 helper 会共同持有命名空间级 `Lease/kaoyan-update-operation-lock`。Lease 记录 owner 和过期 epoch，并通过 `resourceVersion` 抢占过期锁；第二个终端在创建临时 Pod、停写或改镜像前以退出码 73 拒绝。正常退出会把 Lease 释放为空 owner；终端异常消失时，在输出的过期时间之后重试即可，不依赖 `/tmp` 文件锁。
+
+### 日常保留数据库更新
+
+日常更新默认是 `preserve`。执行前要求 API/Web 健康、API `Recreate`、两个 PVC `Bound`、Certificate `Ready`、无活动 Backup Job，并要求操作者已经用安全备份副本离线演练 migrations：
+
+```bash
+bash scripts/k8s-update.sh --execute \
+  --namespace kaoyan-pomodoro \
+  --confirm-context nzfklii-kite \
+  --confirm-execute 'UPDATE kaoyan-pomodoro ON nzfklii-kite TO <MAIN_SHA> USING preserve' \
   --migration-check-passed \
   --main-sha <MAIN_SHA> \
   --api-image 'ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<MAIN_SHA>@sha256:<API_DIGEST>' \
@@ -93,29 +107,54 @@ bash scripts/update.sh --execute \
   --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<MAIN_SHA>@sha256:<BACKUP_DIGEST>'
 ```
 
-执行模式按以下顺序运行：
+顺序固定为：在 `guilyrh` 拉取检查三张镜像；挂起 Backup；停止 Web 再停止 API；创建并验证确定名称的升级前 Backup Job；更新三张镜像；先启动 API 并等待 migration/rollout/readiness；再启动 Web；检查正式 HTTPS 和 Certificate；最后恢复执行前的 CronJob suspend 状态。脚本轮询 Job 的 `Complete`/`Failed` condition，不用只等待 `Complete` 直到 1800 秒。成功 Job直接复用且不删除；Failed Job原样保留，并把确定性的 `-retry-N` 名称、attempt 和失败 Job列表先写入状态 ConfigMap。本次执行安全失败后，调查原 Job并再次 `--resume`，才会创建已记录的重试 Job。
 
-1. 在 `guilyrh` 创建三张目标镜像的短生命周期拉取探针；全部成功后删除探针。
-2. 以 mode `0600` 写入本地状态记录，包含 context、Namespace、旧/新镜像、原副本数和原 CronJob `suspend`。
-3. 挂起 `kaoyan-backup` 并再次确认没有活动 Backup Job。
-4. 先将 Web 缩容到 0，再将 API 缩容到 0，等待所有 Web/API Pod 消失。只停 Web 不构成完整停写，因为已安装的 PWA 或客户端仍可直接访问 API。
-5. 从现有 CronJob 创建 `kaoyan-backup-pre-update-<timestamp>`，等待 Job 成功。备份脚本本身完成 SQLite、gzip 和解压后完整性验证。
-6. 保持 API/Web 为 0，分别更新 API、Web 和 Backup 的完整镜像引用。
-7. 只恢复原 API 单副本。API 启动会执行 Drizzle migrations `0007`—`0009`；等待 rollout 和 readiness 成功，并确认 Pod 仍在 `guilyrh`。
-8. API 成功后恢复 Web 原副本数，等待 rollout，确认 Pod 仍在 `guilyrh`。
-9. 验证正式 HTTPS 的 live、ready 和首页，再次确认 Certificate `Ready`。
-10. 恢复更新前记录的 CronJob `suspend` 状态，保留升级前 Backup Job 和状态记录用于审计。
+### 一次性空库重建
+
+`reset-empty` 不是日常更新方式。它只接续“API/Web 已是 0、Backup 已挂起、没有活动 Backup Job、数据卷中的 SQLite/WAL/SHM 已经不存在”的维护现场。脚本本身永远不删除数据库文件；只要发现任何一个文件存在就拒绝。
+
+截至 2026-07-16 的特殊现场保留了安全备份 `kaoyan-20260716T023824338082865Z-daily.sqlite.gz`。完成下一轮开发、合并 `main`、发布并核对三张新镜像后，先使用以下模板；不要把任何历史旧提交写入命令：
+
+```bash
+bash scripts/k8s-update.sh --plan \
+  --namespace kaoyan-pomodoro \
+  --database-mode reset-empty \
+  --backup-file kaoyan-20260716T023824338082865Z-daily.sqlite.gz \
+  --main-sha <未来最终MAIN_SHA> \
+  --api-image 'ghcr.io/monsoonr/kaoyan-pomodoro-api:sha-<未来最终MAIN_SHA>@sha256:<API_DIGEST>' \
+  --web-image 'ghcr.io/monsoonr/kaoyan-pomodoro-web:sha-<未来最终MAIN_SHA>@sha256:<WEB_DIGEST>' \
+  --backup-image 'ghcr.io/monsoonr/kaoyan-pomodoro-backup:sha-<未来最终MAIN_SHA>@sha256:<BACKUP_DIGEST>'
+```
+
+Plan 会打印三条精确确认。正式执行时原样加入 `--confirm-execute`、`--confirm-reset-empty` 和 `--confirm-backup`。拉取检查后，受限临时 Pod 会以只读方式挂载数据/备份 PVC，确认 SQLite/WAL/SHM 均不存在，并对指定备份执行 gzip、完整性和外键检查；通过后才持久化状态并切换镜像。随后新 API 镜像的迁移 Pod 在空数据卷上执行全部 migrations。
+
+### 管理员初始化
+
+空库 migration 完成后主脚本停在 `awaiting-admin-init`，API/Web 都保持 0，Backup 保持 suspended。它会打印下一条精确命令：
+
+```bash
+bash scripts/k8s-admin-init.sh \
+  --namespace kaoyan-pomodoro \
+  --main-sha <MAIN_SHA> \
+  --confirm-context nzfklii-kite \
+  --confirm-init 'INITIALIZE ADMIN IN kaoyan-pomodoro ON nzfklii-kite FOR <MAIN_SHA>'
+```
+
+辅助脚本从持久状态读取新 API 镜像。它先创建固定在 `guilyrh`、只读挂载数据 PVC 的受限状态检查 Pod，运行 `node dist/cli/account.js status`。若数据库已返回 `initialized`（包括 init 已提交、但 Kite 在 ConfigMap patch 前断开的现场），helper 不创建或 attach 初始化 Pod，而是把阶段收敛到 `admin-initialized` 并以 0 退出；只有 `not-initialized` 才创建非 root 一次性 TTY Pod运行 `node dist/cli/account.js init`。用户名和密码不允许出现在命令参数、环境变量、ConfigMap 或日志中。成功后再运行前述 `--resume`；主脚本会再次从数据库事实确认管理员存在，然后先启动 API、再启动 Web。
+
+所有更新临时 Pod 都设置 `automountServiceAccountToken: false`、非 root、`allowPrivilegeEscalation: false`、`drop: ALL`、`RuntimeDefault` seccomp、固定节点和 edge toleration；不使用 HostPath。
 
 ## 失败边界与人工处置
 
-脚本不提供 SQLite down migration，也不自动恢复旧数据库或旧镜像。
-
-- 镜像拉取探针失败发生在停写前，不改变业务工作负载。
-- 一旦停写开始，任一步失败都会再次把 API/Web 保持在 0，并把 Backup CronJob 保持为 suspended。
-- API 新镜像一旦启动，就必须假设 migrations 可能已经提交。此后绝不能只把 API 镜像改回旧版，否则旧代码可能读取不兼容 schema。
-- 失败时记录升级前 Backup Job、三张旧镜像、原副本数和 CronJob 状态，保留失败数据库现场，先判断是向前修复还是“旧应用 + 升级前数据库”成对恢复。
-- 只有确认尚未接受升级后写入、明确接受丢弃升级后数据，并经单独审核后，才能人工恢复升级前备份。恢复前仍需创建失败现场备份。
-- 不使用 `kubectl rollout undo` 作为多用户数据库升级的自动回滚方式。
+- 镜像拉取失败发生在停写前，不改变 Deployment、CronJob 或持久状态对象。
+- 停写或空库状态持久化后，任一步失败都会强制 API/Web 为 0、Backup `suspend=true`，并保留最后完成阶段供 `--resume` 使用。
+- 管理员未初始化是安全暂停，不启动 Web；终端在初始化成功后、状态 patch 前断开也没关系，`--resume` 会从数据库事实识别已完成初始化。
+- preserve 备份 Job出现 `Failed=True` 时会立即失败，不等待满 1800 秒；保留失败 Job，按状态中的 `backupJob`/`backupAttempt`/`failedBackupJobs` 调查，并用同一条 `--resume` 创建已持久化的确定性重试。
+- 若提示另一个 owner 持有更新 Lease，不要删除对方临时 Pod或覆盖阶段；先确认对应终端是否仍在运行，只在 Lease 显示的过期 epoch 之后重试。
+- 脚本不提供 SQLite down migration，不自动恢复旧数据库，不自动切回旧镜像，也不执行 `kubectl rollout undo`。
+- 新 API 镜像可能已经提交 migrations 后，禁止只切回旧应用镜像。人工回退必须单独审核“旧应用镜像 + 匹配的旧数据库”整体方案。
+- 若考虑恢复备份，先保存失败现场，确认没有需要保留的升级后写入并明确接受数据损失；再单独运行 `scripts/k8s-restore-backup.sh --plan`。更新脚本不会调用恢复脚本。
+- 失败调查不得输出 Secret、密码、Cookie、Token、邀请码、kubeconfig 或生产数据库内容；优先向前修复。
 
 ## 日常备份与恢复
 
