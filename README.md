@@ -27,6 +27,18 @@ pnpm dev
 
 浏览器打开终端中显示的地址。完整自托管环境还需要 API、SQLite 和 `APP_ORIGIN`，见部署文档。
 
+### 本地实时开发
+
+首次使用时安装依赖并交互式创建本地管理员，之后一条命令同时启动 Web 和 API：
+
+```bash
+pnpm install
+pnpm local:account:init
+pnpm dev:local
+```
+
+浏览器固定打开 <http://localhost:5173>。修改前端代码后 Vite 会自动热更新；修改 API 代码后 `tsx watch` 会自动重启 API。本地数据仅存放在项目的 `.local-data/`，不会使用生产数据库。按 `Ctrl+C` 会同时停止前后端。
+
 ## 生产构建
 
 ```bash
