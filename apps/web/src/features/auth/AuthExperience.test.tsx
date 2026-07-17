@@ -45,6 +45,16 @@ describe('authentication experience', () => {
     return { runtime, api, database, resumeAfterAuthentication };
   }
 
+  it('uses the official logo on the login screen', async () => {
+    const { runtime } = setup();
+    const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
+    await screen.findByRole('heading', { name: '登录你的学习空间' });
+    const logo = document.querySelector<HTMLImageElement>('.login-brand img');
+    expect(logo?.getAttribute('src')).toBe('/logo.svg');
+    view.unmount();
+    await runtime.closed();
+  });
+
   it.each([
     [new SyncClientError('INVALID_CREDENTIALS', 'secret'), '用户名或密码错误'],
     [new RateLimitedError(), '登录尝试过于频繁'],

@@ -4,7 +4,7 @@ import { VitePWA, type VitePWAOptions } from 'vite-plugin-pwa';
 
 export const pwaOptions: Partial<VitePWAOptions> = {
   registerType: 'prompt',
-  includeAssets: ['favicon.svg', 'icons/*.svg'],
+  includeAssets: ['logo.svg', 'favicon.svg', 'icons/*.svg'],
   manifest: {
     name: '考研番茄钟',
     short_name: '考研钟',
