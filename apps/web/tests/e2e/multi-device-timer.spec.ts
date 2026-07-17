@@ -8,11 +8,11 @@ async function login(context: BrowserContext): Promise<Page> {
   await page.getByLabel('用户名').fill('learner');
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '今天也稳稳推进。' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '专注此刻' })).toBeVisible();
   return page;
 }
 
-async function navigate(page: Page, label: '首页' | '今日任务' | '任务库' | '专注记录') {
+async function navigate(page: Page, label: '专注' | '今日任务' | '任务库' | '学习记录') {
   if (!(await page.locator('.sidebar').count()))
     await page.getByRole('button', { name: '返回今日任务', exact: true }).first().click();
   await page.locator('.sidebar').getByRole('button', { name: label, exact: true }).click();
@@ -103,9 +103,9 @@ test('two isolated devices share, race, and reconcile one global timer', async (
     await startTask(deviceA, '线性代数共享计时');
     const timerId = await deviceA.getByTestId('timer-id').textContent();
     await manualSync(deviceB);
-    await navigate(deviceB, '首页');
+  await navigate(deviceB, '专注');
     await expect(deviceB.getByRole('region', { name: '当前活动计时器' })).toBeVisible();
-    await deviceB.getByRole('button', { name: '返回当前计时器' }).click();
+    await deviceB.getByRole('button', { name: '打开计时' }).click();
     await expect(deviceB.getByTestId('timer-id')).toHaveText(timerId ?? '');
 
     await deviceB.getByRole('button', { name: '暂停计时器' }).click();
@@ -124,8 +124,8 @@ test('two isolated devices share, race, and reconcile one global timer', async (
     await exitTimer(deviceB);
     await manualSync(deviceA);
     await expect(deviceA.getByTestId('timer-id')).toHaveCount(0);
-    await navigate(deviceA, '专注记录');
-    await navigate(deviceB, '专注记录');
+  await navigate(deviceA, '学习记录');
+  await navigate(deviceB, '学习记录');
     await manualSync(deviceA);
     await manualSync(deviceB);
     await expect(deviceA.getByText('专注中断')).toHaveCount(1);
@@ -176,8 +176,8 @@ test('two isolated devices share, race, and reconcile one global timer', async (
     await manualSync(deviceA);
     await startTask(deviceB, '离线分歧任务');
     await manualSync(deviceA);
-    await navigate(deviceA, '首页');
-    await deviceA.getByRole('button', { name: '返回当前计时器' }).click();
+  await navigate(deviceA, '专注');
+    await deviceA.getByRole('button', { name: '打开计时' }).click();
     await contextA.setOffline(true);
     await deviceA.getByRole('button', { name: '暂停计时器' }).click();
     await expect(deviceA.locator('.focus-actions').getByRole('status'))
@@ -188,7 +188,7 @@ test('two isolated devices share, race, and reconcile one global timer', async (
     await expect(deviceA.getByText('计时器已在其他设备结束')).toBeVisible();
     await deviceA.getByRole('button', { name: '采用服务器状态' }).click();
     await expect(deviceA.getByTestId('timer-id')).toHaveCount(0);
-    await navigate(deviceA, '专注记录');
+  await navigate(deviceA, '学习记录');
     await manualSync(deviceA);
     const taskRows = deviceA.locator('.record-row').filter({ hasText: '离线分歧任务' });
     await expect(taskRows).toHaveCount(1);

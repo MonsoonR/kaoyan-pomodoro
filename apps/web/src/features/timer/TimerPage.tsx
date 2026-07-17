@@ -1,6 +1,6 @@
 import type { DailyTask } from '@kaoyan/contracts';
 import { ArrowLeft, CheckCircle2, Clock3 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { Progress, SubjectBadge } from '../../components.jsx';
 import type { LocalDailyTask, LocalTimerProjection } from '../../db/types';
 import type { OfflineOperationQueue } from '../../sync/queue';
@@ -102,39 +102,50 @@ export function TimerPage({
     : 0;
   const underlyingState = timer.status;
   const reconciliation = viewModel.reconciliation;
+  const ringStyle = {
+    '--timer-progress': `${timer.plannedSeconds > 0
+      ? Math.min(360, Math.max(0, progress / timer.plannedSeconds * 360))
+      : 0}deg`,
+  } as CSSProperties;
 
   return <section className="focus-page">
     <button className="focus-back" type="button" onClick={onBack}>
       <ArrowLeft size={18} />返回今日任务
     </button>
-    <div className="focus-card">
-      <SubjectBadge subject={subject} />
-      <h1>{title}</h1>
-      <p>计时器 ID：<span data-testid="timer-id">{timer.id}</span></p>
-      <div className="phase" aria-live="polite">
-        <Clock3 size={17} />{PHASE_LABELS[timer.phase]}
-        <span>{underlyingState === 'paused' || underlyingState === 'pausing' ? '已暂停' : '进行中'}</span>
+    <div className="focus-timer-layout">
+      <header className="focus-timer-heading">
+        <SubjectBadge subject={subject} />
+        <h1>{title}</h1>
+        <p className="timer-identity">计时器 ID：<span data-testid="timer-id">{timer.id}</span></p>
+      </header>
+      <div className={`timer-circle${underlyingState === 'paused' || underlyingState === 'pausing' ? ' timer-circle--paused' : ''}`} style={ringStyle}>
+        <div className="timer-circle__inner">
+          <div className="phase" aria-live="polite">
+            <Clock3 size={17} />{PHASE_LABELS[timer.phase]}
+            <span>{underlyingState === 'paused' || underlyingState === 'pausing' ? '已暂停' : '进行中'}</span>
+          </div>
+          <div className="timer" aria-label={`剩余时间 ${clockText}`}>{clockText}</div>
+          <p className="timer-calibration">{viewModel.pending ? '等待同步 · ' : ''}{clockLabel}</p>
+          <button
+            className="text-link text-link--green timer-sync-action"
+            type="button"
+            disabled={manualBusy}
+            onClick={async () => {
+              if (manualBusy) return;
+              setManualBusy(true);
+              try { await onManualSync(); } finally { setManualBusy(false); }
+            }}
+          >{manualBusy ? '计时器同步中…' : '同步计时器'}</button>
+          {reason && (underlyingState === 'paused' || underlyingState === 'pausing')
+            ? <p className="timer-reason">暂停原因：{reason}</p>
+            : null}
+          <Progress
+            value={progress}
+            max={timer.plannedSeconds}
+            label={`${PHASE_LABELS[timer.phase]}计时进度`}
+          />
+        </div>
       </div>
-      <div className="timer" aria-label={`剩余时间 ${clockText}`}>{clockText}</div>
-      <p className="timer-calibration">{viewModel.pending ? '等待同步 · ' : ''}{clockLabel}</p>
-      <button
-        className="text-link text-link--green"
-        type="button"
-        disabled={manualBusy}
-        onClick={async () => {
-          if (manualBusy) return;
-          setManualBusy(true);
-          try { await onManualSync(); } finally { setManualBusy(false); }
-        }}
-      >{manualBusy ? '计时器同步中…' : '同步计时器'}</button>
-      {reason && (underlyingState === 'paused' || underlyingState === 'pausing')
-        ? <p className="timer-reason">暂停原因：{reason}</p>
-        : null}
-      <Progress
-        value={progress}
-        max={timer.plannedSeconds}
-        label={`${PHASE_LABELS[timer.phase]}计时进度`}
-      />
       {reconciliation ? <TimerReconciliation
         model={reconciliation}
         onAdopt={async () => {

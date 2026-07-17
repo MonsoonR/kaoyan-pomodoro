@@ -1,6 +1,7 @@
-import { AlertCircle, LogIn, Sprout, UserPlus } from 'lucide-react';
-import { type FormEvent, type ReactNode, useId, useState } from 'react';
+import { AlertCircle, LogIn, UserPlus } from 'lucide-react';
+import { type FormEvent, type ReactNode, useEffect, useId, useState } from 'react';
 import { Modal } from '../../components.jsx';
+import { Brand } from '../../components/Brand';
 import { NetworkError, RateLimitedError, ServerError, SyncClientError } from '../../sync/errors';
 import { useRuntime, useRuntimeSnapshot } from '../../runtime/runtime-context';
 
@@ -80,27 +81,77 @@ export function LoginForm({ reauthentication = false }: {
 function LoginScreen() {
   const { firstLoginOffline } = useRuntimeSnapshot();
   return (
-    <main className="login-page">
+    <AuthScaffold>
       <section className="login-card" aria-labelledby="login-title">
-        <div className="login-brand"><Sprout /><span>考研番茄钟</span></div>
-        <h1 id="login-title">登录你的学习空间</h1>
-        <p>任务、今日计划、设置和专注记录会在同一账号的设备间同步。</p>
+        <p className="login-kicker">考研番茄钟 / STUDY WITH RHYTHM</p>
+        <h1 id="login-title">把今天的每一段，<br />交给专注。</h1>
+        <p>任务、今日计划、设置和专注记录，会在同一账号的设备间安全同步。</p>
         {firstLoginOffline ? (
           <p className="login-offline" role="status">
             <AlertCircle size={18} /> 当前离线，首次使用需要联网登录。
           </p>
         ) : null}
         <LoginForm />
-        <small>新账号需要管理员发送邀请链接，暂不提供密码找回。</small>
+        <p className="login-privacy">每个账号的数据彼此隔离；同步内容只对当前账号已登录的设备可见。</p>
+        <InviteEntry />
       </section>
-    </main>
+    </AuthScaffold>
   );
 }
 
-function inviteTokenFromHash(): string | null {
-  const match = globalThis.location?.hash.match(/^#\/invite\/([^/]+)$/);
+function AuthScaffold({ children }: { children: ReactNode }) {
+  return <main className="login-page">
+    <section className="login-art" aria-hidden="true">
+      <Brand inverse />
+      <div className="login-art__orbit"><span>25:00</span></div>
+      <blockquote>不是冲刺的喧闹，<br />是每天都能抵达的一小段。</blockquote>
+      <small>FOCUS · REST · RETURN</small>
+    </section>
+    <section className="login-panel">{children}</section>
+  </main>;
+}
+
+function inviteTokenFromHash(hash = globalThis.location?.hash ?? ''): string | null {
+  const match = hash.match(/^#\/invite\/([^/]+)$/);
   if (!match) return null;
   try { return decodeURIComponent(match[1]!); } catch { return null; }
+}
+
+function inviteTokenFromInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const hashMatch = trimmed.match(/#\/invite\/([^/?#]+)/);
+  const encodedToken = hashMatch?.[1] ?? (/^[A-Za-z0-9_-]{20,}$/.test(trimmed) ? trimmed : null);
+  if (!encodedToken) return null;
+  try { return decodeURIComponent(encodedToken); } catch { return null; }
+}
+
+function InviteEntry() {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const token = inviteTokenFromInput(value);
+    if (!token) {
+      setError('请输入管理员发来的完整邀请链接或邀请码。');
+      return;
+    }
+    setOpen(false);
+    window.location.hash = `#/invite/${encodeURIComponent(token)}`;
+  };
+  return <div className="login-secondary">
+    <button className="text-link text-link--green" type="button" onClick={() => { setError(''); setOpen(true); }}>使用邀请码注册</button>
+    <small>注册需要管理员发出的有效邀请，暂不提供密码找回。</small>
+    <Modal open={open} title="使用邀请码注册" size="small" onClose={() => setOpen(false)}>
+      <form className="login-form" onSubmit={submit}>
+        <p className="dialog-copy">粘贴管理员发来的完整邀请链接，或直接输入邀请码。</p>
+        <label className="field field--full"><span>邀请链接或邀请码</span><input autoFocus autoComplete="off" value={value} onChange={(event) => setValue(event.target.value)} /></label>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        <button className="button button--primary button--wide" type="submit"><UserPlus size={18} />继续注册</button>
+      </form>
+    </Modal>
+  </div>;
 }
 
 function registrationMessage(error: unknown): string {
@@ -145,10 +196,10 @@ function InviteRegistrationScreen({ token }: { token: string }) {
       setError(registrationMessage(reason));
     } finally { setSubmitting(false); }
   };
-  return <main className="login-page">
+  return <AuthScaffold>
     <section className="login-card" aria-labelledby="register-title">
-      <div className="login-brand"><Sprout /><span>考研番茄钟</span></div>
-      <h1 id="register-title">创建你的学习空间</h1>
+      <p className="login-kicker">仅限受邀注册</p>
+      <h1 id="register-title">用一枚邀请，<br />开启备考节奏。</h1>
       <p>设置登录信息后，就可以开始安排自己的复习任务。</p>
       <form className="login-form" onSubmit={submit}>
         <label className="field field--full"><span>用户名</span><input autoFocus required minLength={3} maxLength={64} autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
@@ -159,7 +210,7 @@ function InviteRegistrationScreen({ token }: { token: string }) {
       </form>
       <button className="text-link" type="button" onClick={() => { window.location.hash = '#/home'; }}>返回登录</button>
     </section>
-  </main>;
+  </AuthScaffold>;
 }
 
 function RequiredPasswordChange() {
@@ -193,9 +244,15 @@ function RequiredPasswordChange() {
 
 export function AuthExperience({ children }: { children: ReactNode }) {
   const snapshot = useRuntimeSnapshot();
-  const inviteToken = inviteTokenFromHash();
+  const [locationHash, setLocationHash] = useState(() => globalThis.location?.hash ?? '');
+  useEffect(() => {
+    const update = () => setLocationHash(globalThis.location?.hash ?? '');
+    window.addEventListener('hashchange', update);
+    return () => window.removeEventListener('hashchange', update);
+  }, []);
+  const inviteToken = inviteTokenFromHash(locationHash);
   if (snapshot.authMode === 'booting')
-    return <main className="login-page"><p role="status">正在打开本地学习空间…</p></main>;
+    return <main className="login-page login-page--loading"><p role="status">正在打开本地学习空间…</p></main>;
   if (snapshot.authMode === 'login' && !snapshot.activeUserId)
     return inviteToken ? <InviteRegistrationScreen token={inviteToken} /> : <LoginScreen />;
   return (

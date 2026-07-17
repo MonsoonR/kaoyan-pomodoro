@@ -3,6 +3,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import './task8.css';
+import './design-system.css';
+import './editorial.css';
 import { PwaUpdatePrompt } from './pwa/PwaUpdatePrompt';
 
 globalThis.React = React;

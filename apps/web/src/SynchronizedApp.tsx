@@ -3,24 +3,29 @@ import {
   Archive,
   ArrowRight,
   BookOpen,
-  CalendarDays,
   Clock3,
   Focus,
   Home,
   Library,
   ListTodo,
+  MoreHorizontal,
+  LogOut,
   Plus,
   Save,
   Settings as SettingsIcon,
   Sprout,
   Trash2,
   UserPlus,
+  X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Progress, SubjectBadge, TaskForm, TaskRow } from './components.jsx';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Modal, SubjectBadge, TaskForm, TaskRow } from './components.jsx';
+import { Brand } from './components/Brand';
+import { getExamCountdown } from './config/exam-date';
 import { AccountPanel } from './features/devices/AccountPanel';
 import { AuthExperience } from './features/auth/AuthExperience';
 import { ConflictCenter } from './features/conflicts/ConflictCenter';
+import { FocusDashboard } from './features/dashboard/FocusDashboard';
 import { useReplicaData } from './features/replicas/use-replica-data';
 import { SyncStatusPanel } from './features/sync/SyncStatusPanel';
 import { TimerPage } from './features/timer/TimerPage';
@@ -42,14 +47,30 @@ type Route = 'home' | 'today' | 'library' | 'records' | 'settings' | 'invites' |
 type TaskEditor = { kind: 'task' | 'daily'; item: Task | DailyTask | null } | null;
 
 const NAV = [
-  ['home', '首页', Home],
+  ['home', '专注', Home],
   ['today', '今日任务', ListTodo],
   ['library', '任务库', Library],
-  ['records', '专注记录', Clock3],
+  ['records', '学习记录', Clock3],
   ['settings', '设置', SettingsIcon],
 ] as const;
 
+const MOBILE_NAV = NAV.slice(0, 4);
+
 const ADMIN_NAV = ['invites', '邀请管理', UserPlus] as const;
+
+function ExamCountdownCard() {
+  const countdown = getExamCountdown();
+  const message = countdown.status === 'upcoming'
+    ? <><strong>{countdown.days}</strong><span>天至初试</span></>
+    : countdown.status === 'today'
+      ? <><strong>今天</strong><span>初试日</span></>
+      : <><strong>已结束</strong><span>初试日期已过</span></>;
+  return <section className="exam-countdown" aria-label="考研初试倒计时">
+    <small>考研日期倒计时</small>
+    <div>{message}</div>
+    <p>按本地自然日计算</p>
+  </section>;
+}
 
 function currentRoute(): Route {
   return (globalThis.location?.hash?.replace(/^#\/?/, '') || 'home') as Route;
@@ -95,25 +116,106 @@ function TimerEntry({ timerState, onOpen }: {
   </section>;
 }
 
-function Shell({ route, go, sync, isAdmin, children }: {
+function MobileMoreDrawer({
+  open,
+  onClose,
+  onSettings,
+  onInvites,
+  onLogout,
+  sync,
+  isAdmin,
+  username,
+  role,
+  conflictCount,
+  triggerRef,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSettings: () => void;
+  onInvites: () => void;
+  onLogout: () => void;
+  sync: React.ReactNode;
+  isAdmin: boolean;
+  username: string | null;
+  role: 'admin' | 'user' | null;
+  conflictCount: number;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const focusTimer = window.setTimeout(() => closeRef.current?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      window.setTimeout(() => triggerRef.current?.focus(), 0);
+    };
+  }, [onClose, open, triggerRef]);
+
+  if (!open) return null;
+  const openSettings = () => { onClose(); onSettings(); };
+  const openInvites = () => { onClose(); onInvites(); };
+  const logout = () => { onClose(); onLogout(); };
+
+  return <div className="mobile-more-backdrop" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose();
+  }}>
+    <section className="mobile-more" role="dialog" aria-modal="true" aria-labelledby="mobile-more-title">
+      <header>
+        <div><strong id="mobile-more-title">更多</strong><small>账号、同步与管理</small></div>
+        <button ref={closeRef} className="icon-button" type="button" aria-label="关闭更多功能" onClick={onClose}><X size={18} /></button>
+      </header>
+      <div className="mobile-more__identity">
+        <span>当前账号</span>
+        <strong>{username ?? '本机用户'}</strong>
+        <small>{role === 'admin' ? '管理员' : role === 'user' ? '普通用户' : '离线会话'}</small>
+      </div>
+      <button className="mobile-more__item" type="button" onClick={openSettings}>
+        <SettingsIcon size={19} /><span><strong>设置与账号</strong><small>密码、设备、提醒与计时规则</small></span><ArrowRight size={17} />
+      </button>
+      <div className="mobile-more__sync">{sync}</div>
+      <button className="mobile-more__item" type="button" onClick={openSettings}>
+        <Focus size={19} /><span><strong>同步冲突</strong><small>{conflictCount ? `${conflictCount} 项需要处理` : '当前没有待处理冲突'}</small></span><ArrowRight size={17} />
+      </button>
+      {isAdmin ? <button className="mobile-more__item" type="button" onClick={openInvites}><UserPlus size={19} /><span><strong>邀请管理</strong><small>创建、复制或撤销一次性邀请</small></span><ArrowRight size={17} /></button> : null}
+      <button className="mobile-more__item mobile-more__item--danger" type="button" onClick={logout}><LogOut size={19} /><span><strong>退出当前账号</strong><small>本机未同步的修改会继续保留</small></span><ArrowRight size={17} /></button>
+    </section>
+  </div>;
+}
+
+function Shell({ route, go, sync, isAdmin, username, role, conflictCount, onLogout, children }: {
   route: Route;
   go: (route: Route) => void;
   sync: React.ReactNode;
   isAdmin: boolean;
+  username: string | null;
+  role: 'admin' | 'user' | null;
+  conflictCount: number;
+  onLogout: () => void;
   children: React.ReactNode;
 }) {
-  const navigation = isAdmin ? [...NAV, ADMIN_NAV] : NAV;
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const closeMore = useCallback(() => setMoreOpen(false), []);
   return <div className="app-shell">
     <aside className="sidebar">
-      <button className="brand" type="button" onClick={() => go('home')} aria-label="返回首页">
-        <span className="brand__mark">♧</span><span><strong>考研番茄钟</strong><small>Focus · Plan · Achieve</small></span>
-      </button>
-      <nav className="side-nav" aria-label="主要导航">{navigation.map(([key, label, Icon]) => <button key={key} className={route === key ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+      <Brand onActivate={() => go('home')} />
+      <ExamCountdownCard />
+      <nav className="side-nav" aria-label="主要导航">{NAV.map(([key, label, Icon]) => <button key={key} className={route === key ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+      {isAdmin ? <><p className="side-nav__label">管理</p><nav className="side-nav side-nav--admin" aria-label="管理员导航"><button className={route === ADMIN_NAV[0] ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(ADMIN_NAV[0])}><UserPlus size={19} /><span>{ADMIN_NAV[1]}</span></button></nav></> : null}
       <div className="sidebar-sync">{sync}</div>
-      <div className="side-note"><small>今天只做一件事</small><strong>完成下一个专注</strong></div>
     </aside>
     <main className="app-main"><div className="mobile-sync">{sync}</div>{children}</main>
-    <nav className="bottom-nav" aria-label="手机导航">{navigation.map(([key, label, Icon]) => <button key={key} className={route === key ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
+    <nav className="bottom-nav" aria-label="手机导航">{MOBILE_NAV.map(([key, label, Icon]) => <button key={key} className={route === key ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" onClick={() => { closeMore(); go(key); }}><Icon size={19} /><span>{label}</span></button>)}<button ref={moreButtonRef} className={moreOpen || route === 'settings' || route === 'invites' ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" aria-expanded={moreOpen} aria-haspopup="dialog" onClick={() => setMoreOpen((open) => !open)}><MoreHorizontal size={20} /><span>更多</span></button></nav>
+    <MobileMoreDrawer open={moreOpen} onClose={closeMore} onSettings={() => go('settings')} onInvites={() => go('invites')} onLogout={onLogout} sync={sync} isAdmin={isAdmin} username={username} role={role} conflictCount={conflictCount} triggerRef={moreButtonRef} />
   </div>;
 }
 
@@ -170,7 +272,7 @@ function SettingsPage({ settings, settingsId, conflicts, onSave, toast }: {
 
 function AppContent() {
   const runtime = useRuntime();
-  const { activeUserId, authMode } = useRuntimeSnapshot();
+  const { activeUserId, authMode, username, session } = useRuntimeSnapshot();
   const data = useReplicaData(runtime.database, activeUserId);
   const timerState = useTimerState(runtime.database, activeUserId);
   const queue = activeUserId ? runtime.queueFor(activeUserId) : null;
@@ -338,15 +440,20 @@ function AppContent() {
         ? run(() => queue.completeDailyTask(task.id), '今日任务已确认完成')
         : Promise.reject(new Error('今日任务不可用'))}
     /> : <main className="focus-page"><p role="status">正在准备专注计时…</p></main>;
-  } else page = <section className="dashboard">
-    <header className="hero"><div><div className="date-line"><CalendarDays size={16} />{new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())}</div><h1>今天也稳稳推进。</h1><p>{authMode === 'offline' ? '当前离线，本机操作会保留并在联网后同步。' : '先完成眼前这一项，不需要一次想完所有事情。'}</p></div><div className="hero__actions"><button className="button button--ghost" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加任务</button><button className="button button--primary" type="button" onClick={() => go('today')}><ListTodo size={17} />安排今日任务</button></div></header>
-    <div className="summary-grid"><article className="summary-card"><div className="summary-card__title"><span>今日任务进度</span><i><Sprout /></i></div><div className="summary-number"><strong>{summary.completed} / {summary.total}</strong><span>项已完成</span></div><Progress value={summary.completed} max={summary.total} label="今日任务完成进度" /></article><article className="summary-card"><div className="summary-card__title"><span>今日专注时长</span><i><Clock3 /></i></div><div className="summary-number"><strong>{formatDuration(summary.focusSeconds)}</strong></div><p className="summary-note"><Focus size={16} />完成番茄 {summary.pomodoros} 个</p></article></div>
-    {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
-    <section className="panel"><div className="section-title"><div><h2>今日任务</h2><p>按计划逐项完成</p></div><button className="text-link text-link--green" type="button" onClick={() => go('today')}>管理任务<ArrowRight size={15} /></button></div>{todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} compact startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} />)}</div> : <Empty title="先安排今天的第一项任务" text="从任务库挑选一个目标，或者临时添加。" action={<button className="button button--primary" type="button" onClick={() => go('today')}>安排今日任务</button>} />}</section>
-  </section>;
+  } else page = <FocusDashboard
+    todayTasks={todayTasks}
+    summary={summary}
+    timerState={timerState}
+    activeTask={visibleTimer ? data.dailyTasks.find((task) => task.id === visibleTimer.dailyTaskId) ?? null : null}
+    offline={authMode === 'offline'}
+    onAddTask={() => setEditor({ kind: 'daily', item: null })}
+    onPlanToday={() => go('today')}
+    onStartTask={openOrStartFocus}
+    onOpenTimer={() => visibleTimer && go(`focus/${visibleTimer.dailyTaskId}`)}
+  />;
 
   return <>
-    {route.startsWith('focus/') ? page : <Shell route={route} go={go} sync={sync} isAdmin={runtime.getSnapshot().session?.user.role === 'admin'}>{page}</Shell>}
+    {route.startsWith('focus/') ? page : <Shell route={route} go={go} sync={sync} isAdmin={session?.user.role === 'admin'} username={username} role={session?.user.role ?? null} conflictCount={data.openConflictCount} onLogout={() => { void runtime.logout(); }}>{page}</Shell>}
     <Modal open={Boolean(editor)} title={editor?.item ? '编辑任务' : editor?.kind === 'task' ? '新建长期任务' : '添加今日任务'} onClose={() => setEditor(null)}>
       <TaskForm kind={editor?.kind === 'task' ? 'template' : 'daily'} initial={editor?.item} defaultPreset={settings?.defaultPreset ?? DEFAULT_SETTINGS.defaultPreset} onCancel={() => setEditor(null)} onSave={saveTask} />
     </Modal>

@@ -182,7 +182,7 @@ export function TimerControls({
         {error ? <p className="form-error" role="alert">{error}</p> : null}
         <div className="form-actions">
           <button className="button button--ghost" type="button" disabled={busy !== null} onClick={() => setExitOpen(false)}>取消</button>
-          <button className="button button--danger-ghost" type="submit" disabled={busy !== null}>
+          <button className="button button--danger" type="submit" disabled={busy !== null}>
             {busy === 'exiting' ? '正在退出…' : '确认退出'}
           </button>
           {busy === 'exiting' ? <span role="status" className="sr-only">

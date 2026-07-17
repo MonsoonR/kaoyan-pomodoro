@@ -118,7 +118,7 @@ export function AccountPanel() {
   return (
     <section className="settings-card settings-card--wide account-panel" aria-describedby={statusId}>
       <div className="settings-card__title">
-        <div><h2>账号与设备</h2><p>账号：{username ?? '本机用户'}</p></div>
+        <div><h2>账号与设备</h2><p className="account-identity">账号：{username ?? '本机用户'}{session ? <span className="role-label">{session.user.role === 'admin' ? '管理员' : '普通用户'}</span> : null}</p></div>
         <ShieldCheck />
       </div>
       <div id={statusId} aria-live="polite">

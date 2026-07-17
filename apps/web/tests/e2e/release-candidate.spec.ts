@@ -10,11 +10,11 @@ const password = 'correct horse battery staple';
 
 async function loginPage(page: Page): Promise<Page> {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '登录你的学习空间' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /把今天的每一段.*交给专注/ })).toBeVisible();
   await page.getByLabel('用户名').fill('learner');
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '今天也稳稳推进。' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '专注此刻' })).toBeVisible();
   return page;
 }
 
@@ -24,15 +24,23 @@ async function login(context: BrowserContext): Promise<Page> {
 
 async function navigate(
   page: Page,
-  label: '首页' | '今日任务' | '任务库' | '专注记录' | '设置',
+  label: '专注' | '今日任务' | '任务库' | '学习记录' | '设置',
 ) {
   if (!(await page.locator('.app-shell').count())) {
     await page.getByRole('button', { name: '返回今日任务', exact: true }).first().click();
   }
-  const navigation = page.viewportSize()?.width === 390
-    ? page.getByRole('navigation', { name: '手机导航' })
-    : page.locator('.sidebar');
-  await navigation.getByRole('button', { name: label, exact: true }).click();
+  if (page.viewportSize()?.width === 390) {
+    const navigation = page.getByRole('navigation', { name: '手机导航' });
+    if (label === '设置') {
+      await navigation.getByRole('button', { name: '更多', exact: true }).click();
+      await page.getByRole('dialog', { name: '更多' })
+        .getByRole('button', { name: /设置与账号/ }).click();
+      return;
+    }
+    await navigation.getByRole('button', { name: label, exact: true }).click();
+    return;
+  }
+  await page.locator('.sidebar').getByRole('button', { name: label, exact: true }).click();
 }
 
 async function manualSync(page: Page) {
@@ -122,7 +130,7 @@ test('desktop and 390px mobile Release Candidate behavior', async ({ browser, co
     await expect(page.locator('.task-row').filter({ hasText: title })).toBeVisible();
     await startTask(page, title);
     await page.getByRole('button', { name: '返回今日任务', exact: true }).click();
-    await navigate(page, '首页');
+  await navigate(page, '专注');
     await expect(page.getByRole('region', { name: '当前活动计时器' })).toBeVisible();
 
     const response = await page.request.get('/api/export');
@@ -139,15 +147,32 @@ test('desktop and 390px mobile Release Candidate behavior', async ({ browser, co
     await navigate(page, '设置');
     await expect(page.getByRole('heading', { name: '账号与设备' })).toBeVisible();
     await expect(page.getByRole('heading', { name: '同步冲突' })).toBeVisible();
+    expect(await page.getByLabel('默认计时模式').evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { appearance: style.appearance, backgroundImage: style.backgroundImage, fontSize: style.fontSize, borderRadius: style.borderRadius };
+    })).toEqual(expect.objectContaining({ appearance: 'none', fontSize: '15px', borderRadius: '8px' }));
+    expect(await page.getByLabel('默认计时模式').evaluate((element) => getComputedStyle(element).backgroundImage)).not.toBe('none');
+    expect(await page.getByLabel('完成提示音').evaluate((element) => getComputedStyle(element).appearance)).toBe('none');
     await exitTimer(await (async () => {
-      await navigate(page, '首页');
-      await page.getByRole('button', { name: '返回当前计时器' }).click();
+  await navigate(page, '专注');
+      await page.getByRole('button', { name: '打开计时' }).click();
       return page;
     })());
     return;
   }
 
   await expect(page.getByRole('navigation', { name: '手机导航' })).toBeVisible();
+  const mobileNavigation = page.getByRole('navigation', { name: '手机导航' });
+  await expect(mobileNavigation.getByRole('button')).toHaveCount(5);
+  await mobileNavigation.getByRole('button', { name: '更多', exact: true }).click();
+  const moreDialog = page.getByRole('dialog', { name: '更多' });
+  await expect(moreDialog.getByRole('button', { name: /设置与账号/ })).toBeVisible();
+  await expect(moreDialog.getByRole('button', { name: /同步冲突/ })).toBeVisible();
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+  await page.keyboard.press('Escape');
+  await expect(moreDialog).toHaveCount(0);
+  await expect(mobileNavigation.getByRole('button', { name: '更多', exact: true })).toBeFocused();
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
   await assertNoPageOverflow(page);
   const longTitle = `超长任务标题${'不会撑破手机页面'.repeat(6)}`;
   await createDailyTask(page, longTitle);
@@ -207,9 +232,9 @@ test('desktop and 390px mobile Release Candidate behavior', async ({ browser, co
   const otherContext = await browser.newContext();
   const other = await login(otherContext);
   await manualSync(other);
-  await navigate(other, '首页');
+  await navigate(other, '专注');
   await expect(other.getByRole('region', { name: '当前活动计时器' })).toBeVisible();
-  await other.getByRole('button', { name: '返回当前计时器' }).click();
+  await other.getByRole('button', { name: '打开计时' }).click();
 
   await context.setOffline(true);
   await page.getByRole('button', { name: '暂停计时器' }).click();
@@ -229,6 +254,9 @@ test('desktop and 390px mobile Release Candidate behavior', async ({ browser, co
   await expect(page.getByRole('heading', { name: '账号与设备' })).toBeVisible();
   await expect(page.getByText('当前密码', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '同步冲突' })).toBeVisible();
+  expect(await page.getByLabel('当前密码').evaluate((element) => getComputedStyle(element).fontSize)).toBe('16px');
+  expect(await page.getByLabel('默认计时模式').evaluate((element) => getComputedStyle(element).backgroundImage)).not.toBe('none');
+  expect(await page.getByLabel('完成提示音').evaluate((element) => getComputedStyle(element).appearance)).toBe('none');
   expect(await page.locator('.conflict-center').evaluate((element) =>
     element.scrollWidth <= element.clientWidth)).toBe(true);
   await assertNoPageOverflow(page);
