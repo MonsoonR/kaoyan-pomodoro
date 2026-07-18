@@ -1,6 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_PATH;
+const webPort = Number(process.env.KAOYAN_E2E_WEB_PORT ?? 4173);
+const apiPort = Number(process.env.KAOYAN_E2E_API_PORT ?? 4174);
+const webOrigin = `http://localhost:${webPort}`;
+const apiOrigin = `http://127.0.0.1:${apiPort}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -11,7 +15,7 @@ export default defineConfig({
   reporter: [['list']],
   outputDir: 'test-results/e2e',
   use: {
-    baseURL: 'http://localhost:4173',
+    baseURL: webOrigin,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
@@ -47,14 +51,15 @@ export default defineConfig({
   webServer: [
     {
       command: 'node --import ../api/node_modules/tsx/dist/loader.mjs tests/e2e/support/test-server.ts',
-      url: 'http://127.0.0.1:4174/api/timer',
+      url: `${apiOrigin}/api/timer`,
+      env: { KAOYAN_E2E_API_PORT: String(apiPort), KAOYAN_APP_ORIGIN: webOrigin },
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: 'npm run dev -- --host localhost --port 4173',
-      env: { KAOYAN_API_ORIGIN: 'http://127.0.0.1:4174' },
-      url: 'http://localhost:4173',
+      command: `npm run dev -- --host localhost --port ${webPort}`,
+      env: { KAOYAN_API_ORIGIN: apiOrigin },
+      url: webOrigin,
       reuseExistingServer: false,
       timeout: 120_000,
     },

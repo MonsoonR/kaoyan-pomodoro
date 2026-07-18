@@ -8,6 +8,7 @@ import { openDatabase } from '../../../../api/src/db/client';
 import { migrateDatabase } from '../../../../api/src/db/migrate';
 
 const directory = mkdtempSync(join(tmpdir(), 'kaoyan-timer-e2e-'));
+const port = Number(process.env.KAOYAN_E2E_API_PORT ?? 4174);
 const database = openDatabase(join(directory, 'test.sqlite'));
 migrateDatabase(database.db);
 await initializeAccount(database.sqlite, {
@@ -22,7 +23,7 @@ const app = await createApp({
   passwordOptions: TEST_PASSWORD_OPTIONS,
   logger: false,
 });
-await app.listen({ host: '127.0.0.1', port: 4174 });
+await app.listen({ host: '127.0.0.1', port });
 
 let closing = false;
 async function close() {

@@ -28,11 +28,8 @@ button.brand:hover {
 .brand__mark {
   width: 38px;
   height: 38px;
-  border-radius: 50%;
-  color: var(--copper);
-  background: transparent;
-  box-shadow: none;
-  transform: none;
+  object-fit: contain;
+  flex: 0 0 auto;
 }
 
 .brand strong {
@@ -257,10 +254,6 @@ button.brand:hover {
   padding: 0;
   color: #f9f6ee;
   cursor: default;
-}
-
-.brand--inverse .brand__mark {
-  color: var(--sun);
 }
 
 .brand--inverse small {

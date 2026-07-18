@@ -48,8 +48,8 @@ describe('authentication experience', () => {
   it('uses the official logo on the login screen', async () => {
     const { runtime } = setup();
     const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
-    await screen.findByRole('heading', { name: '登录你的学习空间' });
-    const logo = document.querySelector<HTMLImageElement>('.login-brand img');
+    await screen.findByLabelText('用户名');
+    const logo = document.querySelector<HTMLImageElement>('.login-art .brand__mark');
     expect(logo?.getAttribute('src')).toBe('/logo.svg');
     view.unmount();
     await runtime.closed();

@@ -1,5 +1,3 @@
-import { TimerReset } from 'lucide-react';
-
 type BrandProps = {
   className?: string;
   inverse?: boolean;
@@ -14,7 +12,7 @@ export function Brand({
   showTagline = true,
 }: BrandProps) {
   const content = <>
-    <span className="brand__mark" aria-hidden="true"><TimerReset size={25} /></span>
+    <img className="brand__mark" src="/logo.svg" alt="" />
     <span className="brand__copy">
       <strong>考研番茄钟</strong>
       {showTagline ? <small>FOCUS · REST · RETURN</small> : null}

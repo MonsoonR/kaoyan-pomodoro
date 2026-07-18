@@ -71,7 +71,6 @@
 }
 .login-card { width: min(100%, 440px); padding: 34px; border: 1px solid var(--line); border-radius: 22px; background: #fff; box-shadow: var(--shadow-lg); }
 .login-brand { margin-bottom: 26px; color: var(--green-dark); display: flex; align-items: center; gap: 9px; font-weight: 650; }
-.login-brand img { width: 28px; height: 28px; object-fit: contain; flex: 0 0 auto; }
 .login-card h1 { font-size: 27px; letter-spacing: -.025em; }
 .login-card > p { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.65; }
 .login-card > small { display: block; margin-top: 18px; color: #8c9891; font-size: 10px; text-align: center; }
