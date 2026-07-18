@@ -8,6 +8,7 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 15_000 },
   reporter: [['list']],
+  outputDir: 'test-results/pwa',
   use: {
     baseURL: 'https://localhost:4173',
     ignoreHTTPSErrors: true,

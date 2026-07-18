@@ -9,6 +9,7 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 10_000 },
   reporter: [['list']],
+  outputDir: 'test-results/e2e',
   use: {
     baseURL: 'http://localhost:4173',
     trace: 'retain-on-failure',
@@ -24,8 +25,18 @@ export default defineConfig({
       },
     },
     {
+      name: 'tablet-chromium-820',
+      testMatch: /(?:page-coverage|permissions-responsive)\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 820, height: 1180 },
+        hasTouch: true,
+        launchOptions: executablePath ? { executablePath, args: ['--no-sandbox'] } : undefined,
+      },
+    },
+    {
       name: 'mobile-chromium-390',
-      testMatch: /release-candidate\.spec\.ts/,
+      testMatch: /(?:page-coverage|permissions-responsive|release-candidate)\.spec\.ts/,
       use: {
         ...devices['Pixel 5'],
         viewport: { width: 390, height: 844 },
