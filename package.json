@@ -16,6 +16,8 @@
   },
   "scripts": {
     "dev": "pnpm --filter @kaoyan/web dev",
+    "dev:local": "node scripts/dev-local.mjs",
+    "local:account:init": "node scripts/dev-local.mjs --init-account",
     "lint": "pnpm --recursive lint",
     "typecheck": "pnpm --recursive --if-present typecheck",
     "test": "pnpm --recursive --if-present test",
