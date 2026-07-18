@@ -11,7 +11,7 @@ export function PwaUpdatePrompt() {
     updateServiceWorker,
   } = useRegisterSW({
     onRegisterError() {
-      setError('离线功能更新失败，当前版本仍可安全使用。');
+      setError('暂时无法完成更新，稍后可以重试。');
     },
   });
 
@@ -21,7 +21,7 @@ export function PwaUpdatePrompt() {
     try {
       await updateServiceWorker(true);
     } catch {
-      setError('新版本应用失败，请稍后重试。');
+      setError('暂时无法启用新内容，请稍后重试。');
       setUpdating(false);
     }
   };
@@ -29,9 +29,9 @@ export function PwaUpdatePrompt() {
   if (error) return <div className="pwa-notice pwa-notice--error" role="alert">
     <span>{error}</span><button type="button" onClick={() => setError(null)}>关闭</button>
   </div>;
-  if (needRefresh && dismissed) return <button className="pwa-update-reopen" type="button" onClick={() => setDismissed(false)}>有新版本可用</button>;
+  if (needRefresh && dismissed) return <button className="pwa-update-reopen" type="button" onClick={() => setDismissed(false)}>发现新内容</button>;
   if (needRefresh) return <div className="pwa-notice" role="status" aria-live="polite">
-    <span>新版本已准备好。当前计时不会被中断。</span>
+    <span>新内容已准备好。当前计时不会中断。</span>
     <button type="button" disabled={updating} onClick={() => void update()}>{updating ? '正在更新…' : '更新并刷新'}</button>
     <button type="button" disabled={updating} onClick={() => setDismissed(true)}>稍后</button>
   </div>;

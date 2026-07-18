@@ -70,20 +70,22 @@ export function InvitationManagement() {
 
   return <section className="page">
     <header className="page-header"><div><h1>邀请管理</h1><p>为新用户创建一次性注册链接。</p></div></header>
-    <section className="panel invite-create">
-      <div className="section-title"><div><h2>创建邀请</h2><p>链接成功使用一次后会立即失效。</p></div><ShieldCheck /></div>
-      <div className="invite-create__controls">
-        <label className="field"><span>有效期</span><select value={expiresInHours} onChange={(event) => setExpiresInHours(Number(event.target.value))}><option value={1}>1 小时</option><option value={24}>24 小时</option><option value={168}>7 天</option><option value={720}>30 天</option></select></label>
-        <button className="button button--primary" type="button" disabled={busy} onClick={() => void create()}><Plus size={17} />{busy ? '正在创建…' : '创建邀请链接'}</button>
-      </div>
-      {error ? <p className="form-error" role="alert">{error}</p> : null}
-    </section>
-    <section className="panel">
-      <div className="section-title"><div><h2>邀请记录</h2><p>{invitations.length} 条记录</p></div><Link2 /></div>
-      {loading ? <p role="status">正在读取邀请记录…</p> : invitations.length ? <div className="invite-list">{invitations.map((invitation) => <article className="invite-row" key={invitation.id}>
-        <div><span className={`status invite-status invite-status--${invitation.status}`}>{STATUS_LABELS[invitation.status]}</span><strong>创建于 {formatDate(invitation.createdAt)}</strong><small>有效期至 {formatDate(invitation.expiresAt)}</small>{invitation.usedBy ? <small>使用者：{invitation.usedBy.username}</small> : null}</div>
-        {invitation.status === 'active' ? <button className="button button--danger-ghost button--small" type="button" disabled={busy} onClick={() => void revoke(invitation)}><XCircle size={15} />撤销</button> : null}
-      </article>)}</div> : <p className="empty-copy">还没有创建过邀请。</p>}
+    <section className="panel invite-management">
+      <section className="invite-section invite-create">
+        <div className="section-title"><div><h2>创建邀请</h2><p>链接成功使用一次后会立即失效。</p></div><ShieldCheck /></div>
+        <div className="invite-create__controls">
+          <label className="field"><span>有效期</span><select value={expiresInHours} onChange={(event) => setExpiresInHours(Number(event.target.value))}><option value={1}>1 小时</option><option value={24}>24 小时</option><option value={168}>7 天</option><option value={720}>30 天</option></select></label>
+          <button className="button button--primary" type="button" disabled={busy} onClick={() => void create()}><Plus size={17} />{busy ? '正在创建…' : '创建邀请链接'}</button>
+        </div>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+      </section>
+      <section className="invite-section">
+        <div className="section-title"><div><h2>邀请记录</h2><p>{invitations.length} 条记录</p></div><Link2 /></div>
+        {loading ? <p role="status">正在读取邀请记录…</p> : invitations.length ? <div className="invite-list">{invitations.map((invitation) => <article className="invite-row" key={invitation.id}>
+          <div><span className={`status invite-status invite-status--${invitation.status}`}>{STATUS_LABELS[invitation.status]}</span><strong>创建于 {formatDate(invitation.createdAt)}</strong><small>有效期至 {formatDate(invitation.expiresAt)}</small>{invitation.usedBy ? <small>使用者：{invitation.usedBy.username}</small> : null}</div>
+          {invitation.status === 'active' ? <button className="button button--danger-ghost button--small" type="button" disabled={busy} onClick={() => void revoke(invitation)}><XCircle size={15} />撤销</button> : null}
+        </article>)}</div> : <p className="empty-copy">还没有创建过邀请。</p>}
+      </section>
     </section>
     <Modal open={createdUrl !== null} title="邀请链接已创建" onClose={() => setCreatedUrl(null)} size="medium">
       <p className="dialog-copy">完整链接只会显示这一次，请立即复制并通过可信方式发送。</p>

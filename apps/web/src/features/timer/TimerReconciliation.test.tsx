@@ -24,7 +24,7 @@ const model = {
   operationCreatedAt: '2026-07-13T04:00:00.000Z',
   attemptedAction: '暂停',
   errorCode: 'STALE_TIMER_VERSION',
-  explanation: '操作基于旧的计时器版本，服务器状态已变化。',
+  explanation: '计时状态已经变化，请确认要保留的内容。',
   serverDescription: '服务器计时器当前为运行中',
   canRetry: true,
   canSwitchToTimer: true,
@@ -52,8 +52,8 @@ it('offers adopt, compatible retry, and an explicit non-color explanation', asyn
   renderReconciliation({ onAdopt, onRetry });
   expect(screen.getByRole('alert').textContent).toContain('尝试了“暂停”');
   expect(screen.getByRole('alert').textContent)
-    .toContain('服务器计时器当前为运行中');
-  await user.click(screen.getByRole('button', { name: '重新执行暂停' }));
+    .not.toContain('STALE_TIMER_VERSION');
+  await user.click(screen.getByRole('button', { name: '重新尝试暂停' }));
   expect(onAdopt).not.toHaveBeenCalled();
   expect(onRetry).toHaveBeenCalledTimes(1);
 });
@@ -66,7 +66,7 @@ it('settles a successful retry without allowing the same retry twice', async () 
     .mockImplementationOnce(() => second.promise);
   const { rerender } = renderReconciliation({ onRetry });
 
-  const retry = screen.getByRole('button', { name: '重新执行暂停' });
+  const retry = screen.getByRole('button', { name: '重新尝试暂停' });
   fireEvent.click(retry);
   fireEvent.click(retry);
   expect(onRetry).toHaveBeenCalledTimes(1);
@@ -76,14 +76,14 @@ it('settles a successful retry without allowing the same retry twice', async () 
   await act(async () => first.resolve());
 
   expect(screen.queryByText('正在重新执行…')).toBeNull();
-  expect(screen.getByRole('button', { name: '已重新提交，等待同步' }))
+  expect(screen.getByRole('button', { name: '已重新尝试，正在更新' }))
     .toHaveProperty('disabled', true);
-  expect(screen.getByRole('button', { name: '采用服务器状态' }))
+  expect(screen.getByRole('button', { name: '保留当前状态' }))
     .toHaveProperty('disabled', false);
   expect(screen.getByRole('button', { name: '切换到当前计时器' }))
     .toHaveProperty('disabled', false);
   fireEvent.click(screen.getByRole('button', {
-    name: '已重新提交，等待同步',
+    name: '已重新尝试，正在更新',
   }));
   expect(onRetry).toHaveBeenCalledTimes(1);
 
@@ -91,7 +91,7 @@ it('settles a successful retry without allowing the same retry twice', async () 
     model={{ ...model, operationId: 'operation-b' }}
     onAdopt={vi.fn()} onRetry={onRetry} onSwitch={vi.fn()}
   />);
-  const nextRetry = screen.getByRole('button', { name: '重新执行暂停' });
+  const nextRetry = screen.getByRole('button', { name: '重新尝试暂停' });
   expect(nextRetry).toHaveProperty('disabled', false);
   fireEvent.click(nextRetry);
   expect(onRetry).toHaveBeenCalledTimes(2);
@@ -116,9 +116,9 @@ it('settles a successful switch and permits a subsequent adopt', async () => {
   await act(async () => pending.resolve());
 
   expect(screen.queryByText('正在切换…')).toBeNull();
-  expect(screen.getByRole('button', { name: '重新执行暂停' }))
+  expect(screen.getByRole('button', { name: '重新尝试暂停' }))
     .toHaveProperty('disabled', false);
-  const adopt = screen.getByRole('button', { name: '采用服务器状态' });
+  const adopt = screen.getByRole('button', { name: '保留当前状态' });
   expect(adopt).toHaveProperty('disabled', false);
   fireEvent.click(adopt);
   expect(onAdopt).toHaveBeenCalledTimes(1);
@@ -131,7 +131,7 @@ it('reports a failed switch and restores every legal action', async () => {
 
   await act(async () => pending.reject(new Error('无法切换到服务器计时器')));
 
-  expect(screen.getByText('无法切换到服务器计时器')).toBeTruthy();
+  expect(screen.getByText('计时状态暂时无法处理，请重试。')).toBeTruthy();
   for (const button of screen.getAllByRole('button'))
     expect(button).toHaveProperty('disabled', false);
 });
@@ -139,11 +139,11 @@ it('reports a failed switch and restores every legal action', async () => {
 it('reports a failed retry and restores every legal action', async () => {
   const pending = deferred();
   renderReconciliation({ onRetry: vi.fn(() => pending.promise) });
-  fireEvent.click(screen.getByRole('button', { name: '重新执行暂停' }));
+  fireEvent.click(screen.getByRole('button', { name: '重新尝试暂停' }));
 
   await act(async () => pending.reject(new Error('重新提交失败')));
 
-  expect(screen.getByText('重新提交失败')).toBeTruthy();
+  expect(screen.getByText('计时状态暂时无法处理，请重试。')).toBeTruthy();
   for (const button of screen.getAllByRole('button'))
     expect(button).toHaveProperty('disabled', false);
 });
@@ -155,13 +155,13 @@ it('keeps a successful adopt submitted until the issue changes', async () => {
     .mockImplementationOnce(() => pending.promise)
     .mockImplementationOnce(() => next.promise);
   const { rerender } = renderReconciliation({ onAdopt });
-  const adopt = screen.getByRole('button', { name: '采用服务器状态' });
+  const adopt = screen.getByRole('button', { name: '保留当前状态' });
   fireEvent.click(adopt);
 
   await act(async () => pending.resolve());
 
   const submitted = screen.getByRole('button', {
-    name: '已采用，等待本地状态更新…',
+    name: '已保留，正在更新…',
   });
   expect(submitted).toHaveProperty('disabled', true);
   fireEvent.click(submitted);
@@ -171,7 +171,7 @@ it('keeps a successful adopt submitted until the issue changes', async () => {
     model={{ ...model, operationId: 'operation-b' }}
     onAdopt={onAdopt} onRetry={vi.fn()} onSwitch={vi.fn()}
   />);
-  const nextAdopt = screen.getByRole('button', { name: '采用服务器状态' });
+  const nextAdopt = screen.getByRole('button', { name: '保留当前状态' });
   expect(nextAdopt).toHaveProperty('disabled', false);
   fireEvent.click(nextAdopt);
   expect(onAdopt).toHaveBeenCalledTimes(2);
@@ -181,12 +181,12 @@ it('keeps a successful adopt submitted until the issue changes', async () => {
 it('reports a failed adopt before re-enabling actions', async () => {
   const pending = deferred();
   renderReconciliation({ onAdopt: vi.fn(() => pending.promise) });
-  const adopt = screen.getByRole('button', { name: '采用服务器状态' });
+  const adopt = screen.getByRole('button', { name: '保留当前状态' });
   fireEvent.click(adopt);
   fireEvent.click(adopt);
   await act(async () => pending.reject(new Error('本地确认失败')));
-  expect(screen.getByText('本地确认失败')).toBeTruthy();
-  expect(screen.getByRole('button', { name: '采用服务器状态' }))
+  expect(screen.getByText('计时状态暂时无法处理，请重试。')).toBeTruthy();
+  expect(screen.getByRole('button', { name: '保留当前状态' }))
     .toHaveProperty('disabled', false);
 });
 
@@ -194,7 +194,7 @@ it('discards a failed retry from an older issue', async () => {
   const oldRetry = deferred();
   const onRetry = vi.fn(() => oldRetry.promise);
   const { rerender } = renderReconciliation({ onRetry });
-  fireEvent.click(screen.getByRole('button', { name: '重新执行暂停' }));
+  fireEvent.click(screen.getByRole('button', { name: '重新尝试暂停' }));
 
   rerender(<TimerReconciliation
     model={{ ...model, operationId: 'operation-b' }}
@@ -222,7 +222,7 @@ it('discards a successful switch from an older issue', async () => {
     model={{ ...model, operationId: 'operation-b' }}
     onAdopt={() => newAdopt.promise} onRetry={vi.fn()} onSwitch={vi.fn()}
   />);
-  fireEvent.click(screen.getByRole('button', { name: '采用服务器状态' }));
+  fireEvent.click(screen.getByRole('button', { name: '保留当前状态' }));
   await act(async () => oldSwitch.resolve());
 
   expect(screen.getByRole('button', { name: '正在采用…' }))
@@ -239,7 +239,7 @@ it('settles an action after unmount without logging or leaking a rejection', asy
   const first = renderReconciliation({
     onRetry: vi.fn(() => resolveAfterUnmount.promise),
   });
-  fireEvent.click(screen.getByRole('button', { name: '重新执行暂停' }));
+  fireEvent.click(screen.getByRole('button', { name: '重新尝试暂停' }));
   first.unmount();
   await act(async () => resolveAfterUnmount.resolve());
 

@@ -11,7 +11,7 @@ function loginMessage(error: unknown): string {
   if (error instanceof NetworkError)
     return '网络连接失败，当前无法登录。';
   if (error instanceof ServerError)
-    return '服务器暂时不可用，请稍后再试。';
+    return '登录服务暂时不可用，请稍后再试。';
   if (error instanceof SyncClientError && error.code === 'INVALID_CREDENTIALS')
     return '用户名或密码错误。';
   if (error instanceof SyncClientError && error.code === 'AUTH_FAILED')
@@ -72,7 +72,7 @@ export function LoginForm({ reauthentication = false }: {
       {error ? <p id={errorId} className="form-error" role="alert">{error}</p> : null}
       <button className="button button--primary button--wide" type="submit" disabled={submitting}>
         <LogIn size={18} />
-        {submitting ? '正在登录…' : reauthentication ? '重新登录并继续同步' : '登录'}
+        {submitting ? '正在登录…' : reauthentication ? '重新登录' : '登录'}
       </button>
     </form>
   );
@@ -85,14 +85,14 @@ function LoginScreen() {
       <section className="login-card" aria-labelledby="login-title">
         <p className="login-kicker">考研番茄钟 / STUDY WITH RHYTHM</p>
         <h1 id="login-title">把今天的每一段，<br />交给专注。</h1>
-        <p>任务、今日计划、设置和专注记录，会在同一账号的设备间安全同步。</p>
+        <p>登录后，可在自己的设备上查看学习任务和记录。</p>
         {firstLoginOffline ? (
           <p className="login-offline" role="status">
             <AlertCircle size={18} /> 当前离线，首次使用需要联网登录。
           </p>
         ) : null}
         <LoginForm />
-        <p className="login-privacy">每个账号的数据彼此隔离；同步内容只对当前账号已登录的设备可见。</p>
+        <p className="login-privacy">每个账号的学习数据相互独立。</p>
         <InviteEntry />
       </section>
     </AuthScaffold>
@@ -252,7 +252,7 @@ export function AuthExperience({ children }: { children: ReactNode }) {
   }, []);
   const inviteToken = inviteTokenFromHash(locationHash);
   if (snapshot.authMode === 'booting')
-    return <main className="login-page login-page--loading"><p role="status">正在打开本地学习空间…</p></main>;
+  return <main className="login-page login-page--loading"><p role="status">正在打开学习空间…</p></main>;
   if (snapshot.authMode === 'login' && !snapshot.activeUserId)
     return inviteToken ? <InviteRegistrationScreen token={inviteToken} /> : <LoginScreen />;
   return (
@@ -267,7 +267,7 @@ export function AuthExperience({ children }: { children: ReactNode }) {
         size="small"
       >
         <p className="dialog-copy">
-          登录已过期。你的学习记录和刚才的修改都已保留，重新登录后会自动同步。
+          登录已过期。你的学习记录和刚才的修改都已保留，请重新登录。
         </p>
         <LoginForm reauthentication />
       </Modal>

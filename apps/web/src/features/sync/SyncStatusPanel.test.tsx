@@ -7,7 +7,7 @@ import { AppRuntime } from '../../runtime/app-runtime';
 import { RuntimeProvider } from '../../runtime/runtime-context';
 import { SyncStatusStore } from '../../sync/status';
 import { session } from '../../test/fixtures';
-import { SyncStatusPanel } from './SyncStatusPanel';
+import { MobileSyncNotice, SyncStatusPanel } from './SyncStatusPanel';
 
 describe('synchronization status UI', () => {
   let database: SyncDatabase | null = null;
@@ -34,8 +34,8 @@ describe('synchronization status UI', () => {
       pendingCount={3} rejectedCount={2} conflictCount={4} syncIssues={[]}
     /></RuntimeProvider>);
     for (const [phase, label] of [
-      ['syncing', '正在同步'], ['synced', '已同步'], ['offline', '离线使用'],
-      ['authRequired', '需要重新登录'], ['error', '同步失败'],
+      ['syncing', '正在同步'], ['synced', '已同步'], ['offline', '暂时无法同步'],
+      ['authRequired', '需要重新登录'], ['error', '暂时无法同步'],
     ] as const) {
       status.update({ phase });
       await waitFor(() => expect(screen.getByText(label)).toBeTruthy());
@@ -48,11 +48,57 @@ describe('synchronization status UI', () => {
     expect(within(counts as HTMLElement).getByText('3')).toBeTruthy();
     expect(within(counts as HTMLElement).getByText('2')).toBeTruthy();
     expect(within(counts as HTMLElement).getByText('4')).toBeTruthy();
-    const button = screen.getByRole('button', { name: '立即同步' });
+    const button = screen.getByRole('button', { name: '立即更新' });
     await user.click(button);
     await user.click(button);
     expect(manualSync).toHaveBeenCalledTimes(1);
     finish();
+    view.unmount();
+    release();
+    await runtime.closed();
+  });
+
+  it('hides normal mobile states and shows only actionable compact notices', async () => {
+    const status = new SyncStatusStore();
+    const manualSync = vi.fn(async () => undefined);
+    const onViewIssues = vi.fn();
+    database = createSyncDatabase(`mobile-sync-notice-${crypto.randomUUID()}`);
+    const runtime = new AppRuntime({
+      database,
+      api: { getCurrentSession: vi.fn(async () => session()) } as never,
+      engine: { status } as never,
+      scheduler: { start: vi.fn(), stop: vi.fn(), manualSync },
+    });
+    const release = runtime.acquire();
+    await runtime.ready();
+    const user = userEvent.setup();
+    const view = render(<RuntimeProvider runtime={runtime}><MobileSyncNotice
+      rejectedCount={0} conflictCount={0} onViewIssues={onViewIssues}
+    /></RuntimeProvider>);
+
+    for (const phase of ['idle', 'syncing', 'synced'] as const) {
+      status.update({ phase });
+      await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    }
+
+    status.update({ phase: 'offline' });
+    await waitFor(() => expect(screen.getByText('网络不可用')).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '重试' }));
+    expect(manualSync).toHaveBeenCalledTimes(1);
+
+    status.update({ phase: 'synced' });
+    view.rerender(<RuntimeProvider runtime={runtime}><MobileSyncNotice
+      rejectedCount={0} conflictCount={2} onViewIssues={onViewIssues}
+    /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByText('有记录需要确认')).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '查看' }));
+    expect(onViewIssues).toHaveBeenCalledTimes(1);
+
+    view.rerender(<RuntimeProvider runtime={runtime}><MobileSyncNotice
+      rejectedCount={1} conflictCount={0} onViewIssues={onViewIssues}
+    /></RuntimeProvider>);
+    await waitFor(() => expect(screen.getByText('同步暂时失败')).toBeTruthy());
+
     view.unmount();
     release();
     await runtime.closed();

@@ -14,7 +14,7 @@ type Summary = {
 function formatFocusedTime(seconds: number): string {
   const hours = Math.floor(seconds / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
-  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}` : `${minutes} min`;
+  return hours > 0 ? `${hours} 小时 ${minutes} 分钟` : `${minutes} 分钟`;
 }
 
 function readyClock(task: DailyTask | null): string {
@@ -60,7 +60,7 @@ export function FocusDashboard({
   const displayTask = activeTask ?? selectedTask;
   const paused = timer?.status === 'paused' || timer?.status === 'pausing';
   const timerLabel = timer
-    ? paused ? '计时已暂停' : timerState.viewModel.pending ? '等待同步' : '专注进行中'
+    ? paused ? '计时已暂停' : timerState.viewModel.pending ? '正在保存' : '专注进行中'
     : selectedTask ? '准备专注' : '等待安排任务';
   const progress = timer && timer.plannedSeconds > 0
     ? Math.min(1, Math.max(0, 1 - timerState.remainingMs / (timer.plannedSeconds * 1_000)))
@@ -92,9 +92,9 @@ export function FocusDashboard({
         </div>
         <div className={`dashboard-timer__ring${paused ? ' dashboard-timer__ring--paused' : ''}`} style={ringStyle}>
           <div className="dashboard-timer__inner">
-            <p>{timer ? 'FOCUS / LIVE' : 'FOCUS / READY'}</p>
+            <p>{timer ? '专注 / 进行中' : '专注 / 准备'}</p>
             <strong aria-live="polite">{timer ? timerState.clockText : readyClock(selectedTask)}</strong>
-            <span>{offline ? '离线使用 · 操作会保留并在联网后同步' : timer ? timerState.clockLabel : '选定任务后，从一段完整专注开始'}</span>
+            <span>{offline ? '网络不可用，恢复后会继续保存学习记录' : timer ? timerState.clockLabel : '选定任务后，从一段完整专注开始'}</span>
             {timer ? <button className="timer-main-action" type="button" onClick={onOpenTimer}>
               <ArrowRight size={21} /><small>{paused ? '继续处理' : '打开计时'}</small>
             </button> : selectedTask ? <button className="timer-main-action" type="button" onClick={() => onStartTask(selectedTask)}>

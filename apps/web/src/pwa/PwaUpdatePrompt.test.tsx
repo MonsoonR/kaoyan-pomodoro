@@ -26,6 +26,6 @@ describe('PWA update prompt', () => {
   it('can be dismissed without losing a way to reopen it', () => {
     render(<PwaUpdatePrompt />);
     fireEvent.click(screen.getByRole('button', { name: '稍后' }));
-    expect(screen.getByRole('button', { name: '有新版本可用' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '发现新内容' })).toBeTruthy();
   });
 });

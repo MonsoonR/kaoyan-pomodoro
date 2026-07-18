@@ -18,7 +18,7 @@ import { NOW, session, TASK_ID, USER_A } from '../../test/fixtures';
 import { ConflictCenter } from './ConflictCenter';
 
 const CASES: Array<[ConflictType, ConflictResolution, string]> = [
-  ['delete_modify', 'keepServer', '保留服务器修改'],
+  ['delete_modify', 'keepServer', '保留另一台设备的内容'],
   ['delete_modify', 'applyDelete', '确认删除'],
   ['delete_modify', 'copyAsNew', '复制后删除原任务'],
   ['complete_restore', 'complete', '最终标记完成'],
@@ -88,7 +88,7 @@ describe('conflict center', () => {
     const view = render(<RuntimeProvider runtime={runtime}><ConflictCenter conflicts={[conflict]} /></RuntimeProvider>);
     await user.click(screen.getByRole('button', { name: '查看并解决' }));
     await user.click(screen.getByRole('radio', { name: new RegExp(`^${label}`) }));
-    await user.click(screen.getByRole('button', { name: '确认解决' }));
+    await user.click(screen.getByRole('button', { name: '确认保留' }));
 
     await waitFor(() => expect(resolveConflict).toHaveBeenCalledTimes(1));
     const request = resolveConflict.mock.calls[0]?.[1];
@@ -126,9 +126,9 @@ describe('conflict center', () => {
     const view = render(<RuntimeProvider runtime={runtime}><ConflictCenter conflicts={[conflict]} /></RuntimeProvider>);
     await user.click(screen.getByRole('button', { name: '查看并解决' }));
     await user.click(screen.getByRole('radio', { name: /确认删除/ }));
-    await user.click(screen.getByRole('button', { name: '确认解决' }));
+    await user.click(screen.getByRole('button', { name: '确认保留' }));
     expect((await screen.findByRole('alert')).textContent)
-      .toContain('已在其他设备用不同方式解决');
+      .toContain('已在其他设备处理');
     expect(screen.getByRole('dialog')).toBeTruthy();
     view.unmount();
     release();

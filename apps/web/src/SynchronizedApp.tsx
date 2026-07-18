@@ -21,13 +21,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, SubjectBadge, TaskForm, TaskRow } from './components.jsx';
 import { Brand } from './components/Brand';
-import { getExamCountdown } from './config/exam-date';
 import { AccountPanel } from './features/devices/AccountPanel';
 import { AuthExperience } from './features/auth/AuthExperience';
 import { ConflictCenter } from './features/conflicts/ConflictCenter';
 import { FocusDashboard } from './features/dashboard/FocusDashboard';
 import { useReplicaData } from './features/replicas/use-replica-data';
-import { SyncStatusPanel } from './features/sync/SyncStatusPanel';
+import { MobileSyncNotice, SyncStatusPanel } from './features/sync/SyncStatusPanel';
 import { TimerPage } from './features/timer/TimerPage';
 import { InvitationManagement } from './features/admin/InvitationManagement';
 import { useTimerState } from './features/timer/use-timer-state';
@@ -57,20 +56,6 @@ const NAV = [
 const MOBILE_NAV = NAV.slice(0, 4);
 
 const ADMIN_NAV = ['invites', '邀请管理', UserPlus] as const;
-
-function ExamCountdownCard() {
-  const countdown = getExamCountdown();
-  const message = countdown.status === 'upcoming'
-    ? <><strong>{countdown.days}</strong><span>天至初试</span></>
-    : countdown.status === 'today'
-      ? <><strong>今天</strong><span>初试日</span></>
-      : <><strong>已结束</strong><span>初试日期已过</span></>;
-  return <section className="exam-countdown" aria-label="考研初试倒计时">
-    <small>考研日期倒计时</small>
-    <div>{message}</div>
-    <p>按本地自然日计算</p>
-  </section>;
-}
 
 function currentRoute(): Route {
   return (globalThis.location?.hash?.replace(/^#\/?/, '') || 'home') as Route;
@@ -107,7 +92,7 @@ function TimerEntry({ timerState, onOpen }: {
   const stateLabel = timer.status === 'paused' || timer.status === 'pausing'
     ? '已暂停'
     : timerState.viewModel.pending
-      ? '等待同步'
+      ? '正在保存'
       : '进行中';
   return <section className="timer-entry" aria-label="当前活动计时器">
     <div><Clock3 size={20} /><span><strong>当前计时器</strong><small aria-live="polite">{stateLabel}</small></span></div>
@@ -170,31 +155,36 @@ function MobileMoreDrawer({
   }}>
     <section className="mobile-more" role="dialog" aria-modal="true" aria-labelledby="mobile-more-title">
       <header>
-        <div><strong id="mobile-more-title">更多</strong><small>账号、同步与管理</small></div>
+        <div><strong id="mobile-more-title">更多</strong><small>{isAdmin ? '账号与管理' : '账号与数据'}</small></div>
         <button ref={closeRef} className="icon-button" type="button" aria-label="关闭更多功能" onClick={onClose}><X size={18} /></button>
       </header>
       <div className="mobile-more__identity">
         <span>当前账号</span>
-        <strong>{username ?? '本机用户'}</strong>
-        <small>{role === 'admin' ? '管理员' : role === 'user' ? '普通用户' : '离线会话'}</small>
+        <strong>{username ?? '当前用户'}</strong>
+        {role === 'admin' ? <small>管理员</small> : null}
       </div>
-      <button className="mobile-more__item" type="button" onClick={openSettings}>
-        <SettingsIcon size={19} /><span><strong>设置与账号</strong><small>密码、设备、提醒与计时规则</small></span><ArrowRight size={17} />
-      </button>
-      <div className="mobile-more__sync">{sync}</div>
-      <button className="mobile-more__item" type="button" onClick={openSettings}>
-        <Focus size={19} /><span><strong>同步冲突</strong><small>{conflictCount ? `${conflictCount} 项需要处理` : '当前没有待处理冲突'}</small></span><ArrowRight size={17} />
-      </button>
-      {isAdmin ? <button className="mobile-more__item" type="button" onClick={openInvites}><UserPlus size={19} /><span><strong>邀请管理</strong><small>创建、复制或撤销一次性邀请</small></span><ArrowRight size={17} /></button> : null}
-      <button className="mobile-more__item mobile-more__item--danger" type="button" onClick={logout}><LogOut size={19} /><span><strong>退出当前账号</strong><small>本机未同步的修改会继续保留</small></span><ArrowRight size={17} /></button>
+      <div className="mobile-more__group">
+        <button className="mobile-more__item" type="button" onClick={openSettings}>
+          <SettingsIcon size={19} /><span><strong>设置与账号</strong><small>密码、设备、提醒与计时规则</small></span><ArrowRight size={17} />
+        </button>
+        <div className="mobile-more__sync">{sync}</div>
+        <button className="mobile-more__item" type="button" onClick={openSettings}>
+          <Focus size={19} /><span><strong>数据需要处理</strong><small>{conflictCount ? `${conflictCount} 项学习记录需要确认` : '当前没有需要处理的数据'}</small></span><ArrowRight size={17} />
+        </button>
+        {isAdmin ? <button className="mobile-more__item" type="button" onClick={openInvites}><UserPlus size={19} /><span><strong>邀请管理</strong><small>创建、复制或撤销一次性邀请</small></span><ArrowRight size={17} /></button> : null}
+      </div>
+      <div className="mobile-more__group mobile-more__group--danger">
+        <button className="mobile-more__item mobile-more__item--danger" type="button" onClick={logout}><LogOut size={19} /><span><strong>退出当前账号</strong><small>退出不会删除尚未更新的学习记录。</small></span><ArrowRight size={17} /></button>
+      </div>
     </section>
   </div>;
 }
 
-function Shell({ route, go, sync, isAdmin, username, role, conflictCount, onLogout, children }: {
+function Shell({ route, go, sync, mobileSync, isAdmin, username, role, conflictCount, onLogout, children }: {
   route: Route;
   go: (route: Route) => void;
   sync: React.ReactNode;
+  mobileSync: React.ReactNode;
   isAdmin: boolean;
   username: string | null;
   role: 'admin' | 'user' | null;
@@ -208,12 +198,11 @@ function Shell({ route, go, sync, isAdmin, username, role, conflictCount, onLogo
   return <div className="app-shell">
     <aside className="sidebar">
       <Brand onActivate={() => go('home')} />
-      <ExamCountdownCard />
       <nav className="side-nav" aria-label="主要导航">{NAV.map(([key, label, Icon]) => <button key={key} className={route === key ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(key)}><Icon size={19} /><span>{label}</span></button>)}</nav>
       {isAdmin ? <><p className="side-nav__label">管理</p><nav className="side-nav side-nav--admin" aria-label="管理员导航"><button className={route === ADMIN_NAV[0] ? 'nav-item nav-item--active' : 'nav-item'} type="button" onClick={() => go(ADMIN_NAV[0])}><UserPlus size={19} /><span>{ADMIN_NAV[1]}</span></button></nav></> : null}
       <div className="sidebar-sync">{sync}</div>
     </aside>
-    <main className="app-main"><div className="mobile-sync">{sync}</div>{children}</main>
+    <main className="app-main">{mobileSync}{children}</main>
     <nav className="bottom-nav" aria-label="手机导航">{MOBILE_NAV.map(([key, label, Icon]) => <button key={key} className={route === key ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" onClick={() => { closeMore(); go(key); }}><Icon size={19} /><span>{label}</span></button>)}<button ref={moreButtonRef} className={moreOpen || route === 'settings' || route === 'invites' ? 'bottom-nav__item bottom-nav__item--active' : 'bottom-nav__item'} type="button" aria-expanded={moreOpen} aria-haspopup="dialog" onClick={() => setMoreOpen((open) => !open)}><MoreHorizontal size={20} /><span>更多</span></button></nav>
     <MobileMoreDrawer open={moreOpen} onClose={closeMore} onSettings={() => go('settings')} onInvites={() => go('invites')} onLogout={onLogout} sync={sync} isAdmin={isAdmin} username={username} role={role} conflictCount={conflictCount} triggerRef={moreButtonRef} />
   </div>;
@@ -230,7 +219,7 @@ function SettingsPage({ settings, settingsId, conflicts, onSave, toast }: {
   useEffect(() => setDraft({ ...DEFAULT_SETTINGS, ...(settings ?? {}) }), [settings]);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!settingsId) return toast('设置仍在同步，请稍后再试。', true);
+    if (!settingsId) return toast('设置暂时无法保存，请稍后再试。', true);
     const patch: Pick<Settings,
       'defaultPreset' | 'customFocusMinutes' | 'customShortBreakMinutes' |
       'customLongBreakMinutes' | 'longBreakInterval' | 'soundEnabled' |
@@ -249,24 +238,26 @@ function SettingsPage({ settings, settingsId, conflicts, onSave, toast }: {
   return <section className="page">
     <PageHeader title="设置" description="按自己的节奏调整专注、休息和提醒。" />
     <form className="settings-grid" onSubmit={submit}>
-      <section className="settings-card">
-        <div className="settings-card__title"><div><h2>计时规则</h2><p>修改后会自动保存，并在其他设备上保持一致。</p></div><SettingsIcon /></div>
-        <label className="field field--full"><span>默认计时模式</span><select value={draft.defaultPreset} onChange={(event) => change('defaultPreset', event.target.value)}>{Object.entries(PRESETS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-        <div className="form-grid">
-          <label className="field"><span>专注分钟</span><input type="number" min="1" max="180" value={draft.customFocusMinutes} onChange={(event) => change('customFocusMinutes', event.target.value)} /></label>
-          <label className="field"><span>短休息分钟</span><input type="number" min="1" max="60" value={draft.customShortBreakMinutes} onChange={(event) => change('customShortBreakMinutes', event.target.value)} /></label>
-          <label className="field"><span>长休息分钟</span><input type="number" min="1" max="120" value={draft.customLongBreakMinutes} onChange={(event) => change('customLongBreakMinutes', event.target.value)} /></label>
-          <label className="field"><span>长休息间隔</span><input type="number" min="1" max="12" value={draft.longBreakInterval} onChange={(event) => change('longBreakInterval', event.target.value)} /></label>
+      <section className="settings-card settings-card--wide settings-card--combined">
+        <div className="settings-section">
+          <div className="settings-card__title"><div><h2>学习与计时设置</h2><p>调整适合自己的专注与休息节奏。</p></div><SettingsIcon /></div>
+          <label className="field field--full"><span>默认计时模式</span><select value={draft.defaultPreset} onChange={(event) => change('defaultPreset', event.target.value)}>{Object.entries(PRESETS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+          <div className="form-grid">
+            <label className="field"><span>专注分钟</span><input type="number" min="1" max="180" value={draft.customFocusMinutes} onChange={(event) => change('customFocusMinutes', event.target.value)} /></label>
+            <label className="field"><span>短休息分钟</span><input type="number" min="1" max="60" value={draft.customShortBreakMinutes} onChange={(event) => change('customShortBreakMinutes', event.target.value)} /></label>
+            <label className="field"><span>长休息分钟</span><input type="number" min="1" max="120" value={draft.customLongBreakMinutes} onChange={(event) => change('customLongBreakMinutes', event.target.value)} /></label>
+            <label className="field"><span>长休息间隔</span><input type="number" min="1" max="12" value={draft.longBreakInterval} onChange={(event) => change('longBreakInterval', event.target.value)} /></label>
+          </div>
         </div>
+        <div className="settings-section settings-section--reminders">
+          <div className="settings-card__title"><div><h3>提醒设置</h3><p>选择计时结束时希望收到的提醒。</p></div><Focus /></div>
+          <label className="toggle"><span><span><strong>完成提示音</strong><small>计时结束时播放简短提示</small></span></span><input type="checkbox" checked={draft.soundEnabled} onChange={(event) => change('soundEnabled', event.target.checked)} /></label>
+          <label className="toggle"><span><span><strong>桌面通知</strong><small>离开标签页时也能收到提醒</small></span></span><input type="checkbox" checked={draft.notificationsEnabled} onChange={(event) => change('notificationsEnabled', event.target.checked)} /></label>
+        </div>
+        <div className="settings-save"><button className="button button--primary" type="submit" disabled={!settingsId}><Save size={17} />保存设置</button></div>
       </section>
-      <section className="settings-card">
-        <div className="settings-card__title"><div><h2>提醒</h2><p>选择计时结束时希望收到的提醒。</p></div><Focus /></div>
-        <label className="toggle"><span><span><strong>完成提示音</strong><small>计时结束时播放简短提示</small></span></span><input type="checkbox" checked={draft.soundEnabled} onChange={(event) => change('soundEnabled', event.target.checked)} /></label>
-        <label className="toggle"><span><span><strong>桌面通知</strong><small>离开标签页时也能收到提醒</small></span></span><input type="checkbox" checked={draft.notificationsEnabled} onChange={(event) => change('notificationsEnabled', event.target.checked)} /></label>
-      </section>
-      <div className="settings-save"><button className="button button--primary" type="submit" disabled={!settingsId}><Save size={17} />保存设置</button></div>
     </form>
-    <div className="settings-grid settings-grid--account"><AccountPanel /><ConflictCenter conflicts={conflicts} /></div>
+    <section className="settings-card settings-card--wide settings-account-group"><AccountPanel /><ConflictCenter conflicts={conflicts} /></section>
   </section>;
 }
 
@@ -300,7 +291,7 @@ function AppContent() {
   const summary = useMemo(() => getSummary(data.dailyTasks, data.focusSessions, today), [data.dailyTasks, data.focusSessions, today]);
   const visibleTimer = timerState.viewModel.timer;
   const run = async (work: () => Promise<unknown>, success: string) => {
-    try { await work(); toast(success); } catch (error) { toast(error instanceof Error ? error.message : '操作失败', true); }
+    try { await work(); toast(success); } catch { toast('操作暂时无法完成，请稍后重试。', true); }
   };
 
   const saveTask = async (input: { title: string; subject: string; target: number; preset: '25-5' | '50-10' | 'custom' }) => {
@@ -373,18 +364,20 @@ function AppContent() {
 
   if (!data.loaded) return <main className="login-page"><p role="status">正在准备你的学习计划…</p></main>;
   const sync = <SyncStatusPanel pendingCount={data.pendingCount} rejectedCount={data.rejectedCount} conflictCount={data.openConflictCount} syncIssues={data.syncIssues} />;
+  const mobileSync = <MobileSyncNotice rejectedCount={data.rejectedCount} conflictCount={data.openConflictCount} onViewIssues={() => go('settings')} />;
   const settings = data.settings as Settings | null;
   const activeTasks = data.tasks.filter((task) => !task.archived);
   let page: React.ReactNode;
 
   if (route === 'today') page = <section className="page">
     <PageHeader title="今日任务" description="选好今天要做的事，然后一项一项完成。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加今日任务</button>} />
-    <section className="panel"><div className="section-title"><div><h2>今天的计划</h2><p>{todayTasks.length} 项任务 · 已完成 {summary.completed} 项</p></div></div>
-      {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
-      {todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} onEdit={(item: DailyTask) => setEditor({ kind: 'daily', item })} onDelete={deleteDaily} onMove={moveDaily} />)}</div> : <Empty title="今天还没有任务" text="临时添加一个，或从长期任务库选择。" />}
-    </section>
-    <section className="panel library-picker"><div className="section-title"><div><h2>从任务库添加</h2><p>把长期任务安排到今天，原任务仍会保留。</p></div><button className="text-link text-link--green" type="button" onClick={() => go('library')}>管理任务库<ArrowRight size={15} /></button></div>
-      <div className="template-list">{activeTasks.map((task) => <article className="template-row" key={task.id}><div><SubjectBadge subject={task.subject} /><strong>{task.title}</strong><span>{task.defaultPomodoroTarget} 个番茄 · {PRESETS[task.defaultTimerPreset]}</span></div><button className="button button--outline button--small" type="button" onClick={() => addToday(task)}><Plus size={15} />加入今天</button></article>)}</div>
+    <section className="panel today-board"><section className="today-section"><div className="section-title"><div><h2>今天的计划</h2><p>{todayTasks.length} 项任务 · 已完成 {summary.completed} 项</p></div></div>
+        {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
+        {todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} onEdit={(item: DailyTask) => setEditor({ kind: 'daily', item })} onDelete={deleteDaily} onMove={moveDaily} />)}</div> : <Empty title="今天还没有任务" text="临时添加一个，或从长期任务库选择。" />}
+      </section>
+      <section className="today-section library-picker"><div className="section-title"><div><h2>从任务库添加</h2><p>把长期任务安排到今天，原任务仍会保留。</p></div><button className="text-link text-link--green" type="button" onClick={() => go('library')}>管理任务库<ArrowRight size={15} /></button></div>
+        <div className="template-list">{activeTasks.map((task) => <article className="template-row" key={task.id}><div><SubjectBadge subject={task.subject} /><strong>{task.title}</strong><span>{task.defaultPomodoroTarget} 个番茄 · {PRESETS[task.defaultTimerPreset]}</span></div><button className="button button--outline button--small" type="button" onClick={() => addToday(task)}><Plus size={15} />加入今天</button></article>)}</div>
+      </section>
     </section>
   </section>;
   else if (route === 'library') page = <section className="page">
@@ -453,7 +446,7 @@ function AppContent() {
   />;
 
   return <>
-    {route.startsWith('focus/') ? page : <Shell route={route} go={go} sync={sync} isAdmin={session?.user.role === 'admin'} username={username} role={session?.user.role ?? null} conflictCount={data.openConflictCount} onLogout={() => { void runtime.logout(); }}>{page}</Shell>}
+    {route.startsWith('focus/') ? page : <Shell route={route} go={go} sync={sync} mobileSync={mobileSync} isAdmin={session?.user.role === 'admin'} username={username} role={session?.user.role ?? null} conflictCount={data.openConflictCount} onLogout={() => { void runtime.logout(); }}>{page}</Shell>}
     <Modal open={Boolean(editor)} title={editor?.item ? '编辑任务' : editor?.kind === 'task' ? '新建长期任务' : '添加今日任务'} onClose={() => setEditor(null)}>
       <TaskForm kind={editor?.kind === 'task' ? 'template' : 'daily'} initial={editor?.item} defaultPreset={settings?.defaultPreset ?? DEFAULT_SETTINGS.defaultPreset} onCancel={() => setEditor(null)} onSave={saveTask} />
     </Modal>
