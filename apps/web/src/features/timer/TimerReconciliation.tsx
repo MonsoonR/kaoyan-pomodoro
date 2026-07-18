@@ -5,7 +5,7 @@ import type { TimerReconciliationModel } from './timer-view-model';
 type ReconciliationBusy = 'adopt' | 'retry' | 'switch';
 
 const BUSY_LABELS: Record<ReconciliationBusy, string> = {
-  adopt: '正在采用服务器状态…',
+  adopt: '正在保留当前状态…',
   retry: '正在重新执行操作…',
   switch: '正在切换到当前计时器…',
 };
@@ -68,15 +68,13 @@ export function TimerReconciliation({
     setError('');
     try {
       await action();
-    } catch (reason) {
+    } catch {
       if (!mountedRef.current ||
           generation !== actionGenerationRef.current ||
           operationId !== operationIdRef.current) return;
       busyRef.current = null;
       setBusy(null);
-      setError(reason instanceof Error
-        ? reason.message
-        : '计时器状态处理失败，请重试');
+      setError('计时状态暂时无法处理，请重试。');
       return;
     }
     if (!mountedRef.current ||
@@ -100,11 +98,9 @@ export function TimerReconciliation({
       <div><h2>需要确认计时器状态</h2><p>{model.explanation}</p></div>
     </div>
     <dl>
-      <div><dt>本机操作</dt><dd>尝试了“{model.attemptedAction}”（{new Intl.DateTimeFormat('zh-CN', {
+      <div><dt>刚才的操作</dt><dd>尝试了“{model.attemptedAction}”（{new Intl.DateTimeFormat('zh-CN', {
         hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
       }).format(new Date(model.operationCreatedAt))}）</dd></div>
-      <div><dt>服务器状态</dt><dd>{model.serverDescription}</dd></div>
-      <div><dt>错误代码</dt><dd>{model.errorCode}</dd></div>
     </dl>
     {error ? <p className="form-error" role="alert">{error}</p> : null}
     {busy ? <p role="status" className="sr-only">{BUSY_LABELS[busy]}</p> : null}
@@ -113,15 +109,15 @@ export function TimerReconciliation({
         {busy === 'adopt'
           ? '正在采用…'
           : adoptSubmitted
-            ? '已采用，等待本地状态更新…'
-            : '采用服务器状态'}
+            ? '已保留，正在更新…'
+            : '保留当前状态'}
       </button>
       {model.canRetry ? <button className="button button--outline" type="button" disabled={busy !== null || retrySubmitted} onClick={() => void runAction('retry', onRetry)}>
         {busy === 'retry'
           ? '正在重新执行…'
           : retrySubmitted
-            ? '已重新提交，等待同步'
-            : `重新执行${model.attemptedAction}`}
+            ? '已重新尝试，正在更新'
+            : `重新尝试${model.attemptedAction}`}
       </button> : null}
       {model.canSwitchToTimer ? <button className="button button--outline" type="button" disabled={busy !== null} onClick={() => void runAction('switch', onSwitch)}>
         {busy === 'switch' ? '正在切换…' : '切换到当前计时器'}

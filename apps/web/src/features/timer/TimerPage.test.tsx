@@ -34,7 +34,7 @@ function snapshot(
       calibration: 'calibrated',
       reliable: true,
     },
-    clockLabel: '已按服务器时间校准',
+    clockLabel: '计时准确',
     remainingMs: 0,
     clockText: '00:00',
   };
@@ -194,7 +194,7 @@ describe('timer page', () => {
             operationCreatedAt: NOW,
             attemptedAction: '完成',
             errorCode: 'TIMER_NOT_ELAPSED',
-            explanation: '服务器时间显示计时器尚未到时，将继续倒计时。',
+            explanation: '计时尚未到时，将继续倒计时。',
             serverDescription: '服务器计时器当前为运行中',
             canRetry: true,
             canSwitchToTimer: false,
@@ -202,7 +202,7 @@ describe('timer page', () => {
         },
       }}
     />);
-    screen.getByRole('button', { name: '采用服务器状态' }).click();
+    screen.getByRole('button', { name: '保留当前状态' }).click();
     await waitFor(async () => expect(await database.operations.get(
       rejected.sequence ?? 0,
     )).toBeUndefined());
@@ -247,7 +247,7 @@ describe('timer page', () => {
           operationCreatedAt: NOW,
           attemptedAction: '暂停',
           errorCode: 'STALE_TIMER_VERSION',
-          explanation: '操作基于旧的计时器版本，服务器状态已变化。',
+          explanation: '计时状态已经变化，请确认要保留的内容。',
           serverDescription: '服务器计时器当前为运行中',
           canRetry: true,
           canSwitchToTimer: true,
@@ -266,12 +266,12 @@ describe('timer page', () => {
       onMessage={vi.fn()}
     />);
 
-    fireEvent.click(screen.getByRole('button', { name: '重新执行暂停' }));
+    fireEvent.click(screen.getByRole('button', { name: '重新尝试暂停' }));
 
     expect(await screen.findByRole('button', {
-      name: '已重新提交，等待同步',
+      name: '已重新尝试，正在更新',
     })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: '采用服务器状态' }))
+    expect(screen.getByRole('button', { name: '保留当前状态' }))
       .toHaveProperty('disabled', false);
     expect(await database.syncIssues.get({ operationId: rejected.operationId }))
       .toBeTruthy();
@@ -283,7 +283,7 @@ describe('timer page', () => {
     expect(afterRetry[0]?.state).toBe('rejected');
 
     fireEvent.click(screen.getByRole('button', {
-      name: '已重新提交，等待同步',
+      name: '已重新尝试，正在更新',
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect((await database.operations.toArray()).filter(
@@ -386,7 +386,7 @@ describe('timer page', () => {
           reconciliation: {
             operationId: 'operation', operationCreatedAt: NOW,
             attemptedAction: '暂停', errorCode: 'TIMER_NOT_ACTIVE',
-            explanation: '服务器上已没有这个活动计时器。',
+            explanation: '这个计时已经结束。',
             serverDescription: '计时器已在其他设备结束',
             canRetry: false, canSwitchToTimer: false,
           },
@@ -403,7 +403,7 @@ describe('timer page', () => {
       onManualSync={vi.fn()}
       onMessage={vi.fn()}
     />);
-    expect(screen.getByText('计时器已在其他设备结束')).toBeTruthy();
+    expect(screen.getByText('这个计时已经结束。')).toBeTruthy();
     expect(screen.queryByText('计时器已结束')).toBeNull();
   });
 });

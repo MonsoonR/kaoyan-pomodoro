@@ -1,6 +1,6 @@
 import type { DailyTask } from '@kaoyan/contracts';
 import { ArrowLeft, CheckCircle2, Clock3 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { Progress, SubjectBadge } from '../../components.jsx';
 import type { LocalDailyTask, LocalTimerProjection } from '../../db/types';
 import type { OfflineOperationQueue } from '../../sync/queue';
@@ -52,8 +52,8 @@ export function TimerPage({
         !shouldAutoCompleteTimer(timer, clock, {
           provisional: viewModel.provisional,
         })) return;
-    void queue.completeTimerOnce(timer.id).catch((error: unknown) =>
-      onMessage(error instanceof Error ? error.message : '完成计时器失败', true));
+    void queue.completeTimerOnce(timer.id).catch(() =>
+      onMessage('暂时无法完成计时，请稍后重试。', true));
   }, [clock, onMessage, queue, timer, viewModel.provisional, viewModel.state]);
 
   if (!timer) {
@@ -68,7 +68,7 @@ export function TimerPage({
           model={reconciliation}
           onAdopt={async () => {
             await queue.acknowledgeTimerIssue(reconciliation.operationId);
-            onMessage('已采用服务器状态');
+            onMessage('已保留当前计时状态');
           }}
           onRetry={async () => {
             await queue.retryTimerOperation(reconciliation.operationId);
@@ -81,7 +81,7 @@ export function TimerPage({
         /> : <><div className="completion">
           <i><CheckCircle2 /></i>
           <strong>{task ? '计时器已结束' : '当前没有活动计时器'}</strong>
-          <p>权威结果会随同步更新今日任务和专注记录。</p>
+          <p>今日任务和专注记录会继续更新。</p>
         </div>
         {task ? <div className="completion-actions">
           {!awaitingConfirmation ? <>
@@ -94,7 +94,7 @@ export function TimerPage({
     </section>;
   }
 
-  const title = 'taskTitle' in timer ? timer.taskTitle : task?.title ?? '正在同步任务';
+  const title = 'taskTitle' in timer ? timer.taskTitle : task?.title ?? '正在准备任务';
   const subject = 'subject' in timer ? timer.subject : task?.subject ?? 'other';
   const reason = localReason(timer);
   const progress = timer.plannedSeconds > 0
@@ -102,44 +102,54 @@ export function TimerPage({
     : 0;
   const underlyingState = timer.status;
   const reconciliation = viewModel.reconciliation;
+  const ringStyle = {
+    '--timer-progress': `${timer.plannedSeconds > 0
+      ? Math.min(360, Math.max(0, progress / timer.plannedSeconds * 360))
+      : 0}deg`,
+  } as CSSProperties;
 
   return <section className="focus-page">
     <button className="focus-back" type="button" onClick={onBack}>
       <ArrowLeft size={18} />返回今日任务
     </button>
-    <div className="focus-card">
-      <SubjectBadge subject={subject} />
-      <h1>{title}</h1>
-      <p>计时器 ID：<span data-testid="timer-id">{timer.id}</span></p>
-      <div className="phase" aria-live="polite">
-        <Clock3 size={17} />{PHASE_LABELS[timer.phase]}
-        <span>{underlyingState === 'paused' || underlyingState === 'pausing' ? '已暂停' : '进行中'}</span>
+    <div className="focus-timer-layout">
+      <header className="focus-timer-heading">
+        <SubjectBadge subject={subject} />
+        <h1>{title}</h1>
+      </header>
+      <div className={`timer-circle${underlyingState === 'paused' || underlyingState === 'pausing' ? ' timer-circle--paused' : ''}`} style={ringStyle}>
+        <div className="timer-circle__inner">
+          <div className="phase" aria-live="polite">
+            <Clock3 size={17} />{PHASE_LABELS[timer.phase]}
+            <span>{underlyingState === 'paused' || underlyingState === 'pausing' ? '已暂停' : '进行中'}</span>
+          </div>
+          <div className="timer" aria-label={`剩余时间 ${clockText}`}>{clockText}</div>
+          <p className="timer-calibration">{viewModel.pending ? '正在保存 · ' : ''}{clockLabel}</p>
+          <button
+            className="text-link text-link--green timer-sync-action"
+            type="button"
+            disabled={manualBusy}
+            onClick={async () => {
+              if (manualBusy) return;
+              setManualBusy(true);
+              try { await onManualSync(); } finally { setManualBusy(false); }
+            }}
+          >{manualBusy ? '正在更新…' : '更新计时状态'}</button>
+          {reason && (underlyingState === 'paused' || underlyingState === 'pausing')
+            ? <p className="timer-reason">暂停原因：{reason}</p>
+            : null}
+          <Progress
+            value={progress}
+            max={timer.plannedSeconds}
+            label={`${PHASE_LABELS[timer.phase]}计时进度`}
+          />
+        </div>
       </div>
-      <div className="timer" aria-label={`剩余时间 ${clockText}`}>{clockText}</div>
-      <p className="timer-calibration">{viewModel.pending ? '等待同步 · ' : ''}{clockLabel}</p>
-      <button
-        className="text-link text-link--green"
-        type="button"
-        disabled={manualBusy}
-        onClick={async () => {
-          if (manualBusy) return;
-          setManualBusy(true);
-          try { await onManualSync(); } finally { setManualBusy(false); }
-        }}
-      >{manualBusy ? '计时器同步中…' : '同步计时器'}</button>
-      {reason && (underlyingState === 'paused' || underlyingState === 'pausing')
-        ? <p className="timer-reason">暂停原因：{reason}</p>
-        : null}
-      <Progress
-        value={progress}
-        max={timer.plannedSeconds}
-        label={`${PHASE_LABELS[timer.phase]}计时进度`}
-      />
       {reconciliation ? <TimerReconciliation
         model={reconciliation}
         onAdopt={async () => {
           await queue.acknowledgeTimerIssue(reconciliation.operationId);
-          onMessage('已采用服务器状态');
+          onMessage('已保留当前计时状态');
         }}
         onRetry={async () => {
           await queue.retryTimerOperation(reconciliation.operationId);

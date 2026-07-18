@@ -11,23 +11,35 @@ import {
 } from './resolution-options';
 
 const TYPE_LABELS = {
-  delete_modify: '删除与修改冲突',
-  complete_restore: '完成与恢复冲突',
-  archive_add_today: '归档与加入今日冲突',
+  delete_modify: '任务的删除与修改存在差异',
+  complete_restore: '任务的完成状态存在差异',
+  archive_add_today: '任务的归档状态存在差异',
 } as const;
 
 function payloadSummary(payload: Record<string, unknown>): string {
-  const entries = Object.entries(payload);
-  if (!entries.length) return '无字段内容';
+  const labels: Record<string, string> = {
+    title: '标题', subject: '科目', archived: '归档状态',
+    status: '完成状态', date: '日期',
+  };
+  const subjects: Record<string, string> = {
+    math: '数学', english: '英语', politics: '政治', '408': '408', other: '其他',
+  };
+  const statuses: Record<string, string> = {
+    pending: '待完成', completed: '已完成', awaiting_confirmation: '待确认',
+  };
+  const entries = Object.entries(payload).filter(([key]) => key in labels);
+  if (!entries.length) return '内容已发生变化';
   return entries.slice(0, 4).map(([key, value]) => {
-    const labels: Record<string, string> = {
-      title: '标题', subject: '科目', archived: '归档状态',
-      status: '完成状态', date: '日期', operationType: '操作',
-    };
-    const shown = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-      ? String(value)
-      : '已变更';
-    return `${labels[key] ?? key}：${shown}`;
+    const shown = key === 'subject' && typeof value === 'string'
+      ? subjects[value] ?? '其他'
+      : key === 'status' && typeof value === 'string'
+        ? statuses[value] ?? '已变化'
+        : key === 'archived' && typeof value === 'boolean'
+          ? value ? '已归档' : '未归档'
+          : typeof value === 'string' || typeof value === 'number'
+            ? String(value)
+            : '已变化';
+    return `${labels[key]}：${shown}`;
   }).join('；');
 }
 
@@ -69,24 +81,24 @@ export function ConflictCenter({ conflicts }: { conflicts: Conflict[] }) {
       );
       await runtime.manualSync();
       setSelected(null);
-      setNotice('冲突已解决，正在获取服务器最终结果。');
+      setNotice('数据已处理，正在更新学习记录。');
     } catch (reason) {
       if (reason instanceof AuthRequiredError) {
         await runtime.authenticationRequired();
-        setError('会话已失效，请重新登录后继续解决冲突。');
+        setError('登录已过期，请重新登录后继续处理。');
       } else
       if (reason instanceof SyncClientError && reason.code === 'CONFLICT_ALREADY_RESOLVED')
-        setError('这个冲突已在其他设备用不同方式解决，请先同步最新状态。');
+        setError('这项数据已在其他设备处理，请先更新后再查看。');
       else if (reason instanceof SyncClientError)
-        setError(reason.message);
-      else setError('解决冲突失败，对话框已保留，请重试。');
+        setError('暂时无法处理这项数据，请稍后重试。');
+      else setError('暂时无法处理这项数据，请稍后重试。');
     } finally { setBusy(false); }
   };
 
   return (
-    <section className="settings-card settings-card--wide conflict-center">
+    <section className="settings-section conflict-center">
       <div className="settings-card__title">
-        <div><h2>同步冲突</h2><p>{openCount} 项需要确认；已解决记录也会保留。</p></div>
+        <div><h2>数据需要处理</h2><p>{openCount ? `${openCount} 项学习记录需要确认。` : '所有学习记录状态一致。'}</p></div>
         <GitMerge />
       </div>
       {notice ? <p className="form-success" role="status">{notice}</p> : null}
@@ -96,40 +108,33 @@ export function ConflictCenter({ conflicts }: { conflicts: Conflict[] }) {
             <ShieldAlert size={20} />
             <div>
               <strong>{TYPE_LABELS[conflict.conflictType]}</strong>
-              <span>{conflict.entityType} · {conflict.entityId}</span>
               <small>{new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(conflict.createdAt))}</small>
-              <p>本地：{payloadSummary(conflict.localPayload)}</p>
-              <p>服务器：{payloadSummary(conflict.serverPayload)}</p>
-              {conflict.status === 'resolved' ? <span className="status status--done">已解决：{conflict.resolution}</span> : null}
+              <p>这台设备：{payloadSummary(conflict.localPayload)}</p>
+              <p>另一台设备：{payloadSummary(conflict.serverPayload)}</p>
+              {conflict.status === 'resolved' ? <span className="status status--done">已处理</span> : null}
             </div>
             {conflict.status === 'open' ? <button className="button button--outline button--small" type="button" onClick={() => setSelected(conflict)}>查看并解决</button> : null}
           </article>
         ))}
-      </div> : <p className="empty-copy">目前没有同步冲突。</p>}
-      <Modal open={Boolean(selected)} title={selected ? TYPE_LABELS[selected.conflictType] : '解决冲突'} onClose={() => !busy && setSelected(null)} size="medium">
+      </div> : <p className="empty-copy">当前没有需要处理的数据。</p>}
+      <Modal open={Boolean(selected)} title={selected ? TYPE_LABELS[selected.conflictType] : '处理数据差异'} onClose={() => !busy && setSelected(null)} size="medium">
         {selected ? <>
-          <p className="dialog-copy">请选择你希望保留的最终状态。服务器会执行选择，随后应用会拉取权威结果。</p>
+          <p className="dialog-copy">部分学习记录存在差异，请选择需要保留的内容。</p>
           <div className="conflict-comparison">
-            <div><strong>本地操作</strong><p>{payloadSummary(selected.localPayload)}</p></div>
-            <div><strong>服务器当前值</strong><p>{payloadSummary(selected.serverPayload)}</p></div>
+            <div><strong>这台设备</strong><p>{payloadSummary(selected.localPayload)}</p></div>
+            <div><strong>另一台设备</strong><p>{payloadSummary(selected.serverPayload)}</p></div>
           </div>
           <fieldset className="resolution-list">
-            <legend>解决方式</legend>
+            <legend>选择保留方式</legend>
             {options.map((option) => <label className={resolution === option.value ? 'resolution resolution--selected' : 'resolution'} key={option.value}>
               <input type="radio" name="resolution" value={option.value} checked={resolution === option.value} onChange={() => setResolution(option.value)} />
               <span><strong>{option.label}</strong><small>{option.description}</small></span>
             </label>)}
           </fieldset>
-          <details className="technical-details"><summary>技术详情</summary><pre>{JSON.stringify({
-            conflictId: selected.id,
-            localOperationId: selected.localOperationId,
-            baseVersion: selected.baseVersion,
-            serverVersion: selected.serverVersion,
-          }, null, 2)}</pre></details>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
           <div className="form-actions">
             <button className="button button--ghost" type="button" onClick={() => setSelected(null)} disabled={busy}>取消</button>
-            <button className="button button--primary" type="button" onClick={resolve} disabled={!resolution || busy}>{busy ? '正在处理…' : '确认解决'}</button>
+            <button className="button button--primary" type="button" onClick={resolve} disabled={!resolution || busy}>{busy ? '正在处理…' : '确认保留'}</button>
           </div>
         </> : null}
       </Modal>

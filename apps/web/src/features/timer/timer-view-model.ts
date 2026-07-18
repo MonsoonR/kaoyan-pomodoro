@@ -47,13 +47,13 @@ const ACTION_NAMES = {
 
 const ERROR_EXPLANATIONS: Record<string, string> = {
   TIMER_ALREADY_ACTIVE: '其他设备已经启动了一个计时器。',
-  STALE_TIMER_VERSION: '操作基于旧的计时器版本，服务器状态已变化。',
-  TIMER_NOT_ACTIVE: '服务器上已没有这个活动计时器。',
+  STALE_TIMER_VERSION: '计时状态已经变化，请确认要保留的内容。',
+  TIMER_NOT_ACTIVE: '这个计时已经结束。',
   TIMER_ALREADY_FINALIZED: '计时器已经在其他设备完成或退出。',
-  INVALID_TIMER_STATE: '当前服务器状态不允许执行这个操作。',
+  INVALID_TIMER_STATE: '当前计时状态无法执行这个操作。',
   INVALID_DAILY_TASK_STATE: '今日任务当前状态不允许启动计时器。',
-  TIMER_ALREADY_ELAPSED: '服务器计时器已经到时。',
-  TIMER_NOT_ELAPSED: '服务器时间显示计时器尚未到时，将继续倒计时。',
+  TIMER_ALREADY_ELAPSED: '这个计时已经到时。',
+  TIMER_NOT_ELAPSED: '计时尚未到时，将继续倒计时。',
   DAILY_TASK_NOT_AVAILABLE: '对应的今日任务已不可用。',
   ACTIVE_TIMER_TASK_LOCKED: '今日任务正由另一个活动计时器占用。',
 };
@@ -102,7 +102,7 @@ export function buildTimerViewModel(input: {
       attemptedAction: ACTION_NAMES[operation.operationType],
       errorCode: issue.errorCode,
       explanation: ERROR_EXPLANATIONS[issue.errorCode] ??
-        '服务器没有接受这个计时器操作。',
+        '这次计时操作暂时无法完成。',
       serverDescription: input.serverTimer
         ? `服务器计时器当前为${input.serverTimer.status === 'running' ? '运行中' : '已暂停'}`
         : operation.operationType === 'timerStart'

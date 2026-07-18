@@ -13,7 +13,7 @@ test('production PWA reopens offline from IndexedDB without caching API data', a
   const login = await loginResponse;
   expect(login.status(), await login.text()).toBe(200);
   expect(login.headers()['cache-control']).toBe('no-store');
-  await expect(page.getByRole('heading', { name: '今天也稳稳推进。' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '专注此刻' })).toBeVisible();
 
   const exported = await page.request.get('/api/export');
   expect(exported.status()).toBe(200);
@@ -48,7 +48,7 @@ test('production PWA reopens offline from IndexedDB without caching API data', a
   await page.close();
   page = await context.newPage();
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('heading', { name: '今天也稳稳推进。' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '专注此刻' })).toBeVisible();
   await page.locator('.sidebar').getByRole('button', { name: '任务库', exact: true }).click();
   await expect(page.getByText('PWA 离线副本')).toBeVisible();
 

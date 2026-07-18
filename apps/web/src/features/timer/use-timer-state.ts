@@ -116,7 +116,7 @@ export function useTimerState(
       loaded,
       viewModel,
       clock,
-      clockLabel: provisional ? '等待同步 · 本机估算' : calibrationLabel(clock),
+      clockLabel: provisional ? '正在保存 · 时间为暂时显示' : calibrationLabel(clock),
       remainingMs,
       clockText: formatTimerClock(remainingMs),
     };

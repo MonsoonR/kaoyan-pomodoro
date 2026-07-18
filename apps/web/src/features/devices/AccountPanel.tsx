@@ -9,7 +9,7 @@ function readableError(error: unknown): string {
     if (error.code === 'INVALID_CURRENT_PASSWORD') return '当前密码不正确。';
     if (error.code === 'CURRENT_DEVICE') return '当前设备请使用“退出当前设备”。';
     if (error.code === 'NETWORK_ERROR') return '网络连接失败，已保留当前设备列表。';
-    return error.message;
+    return '操作暂时无法完成，请稍后重试。';
   }
   return '操作失败，请稍后重试。';
 }
@@ -109,16 +109,16 @@ export function AccountPanel() {
         passwords.confirm,
       );
       setPasswords({ current: '', next: '', confirm: '' });
-      setNotice('密码已修改，其他设备的会话已失效。');
+      setNotice('密码已修改，其他设备需要重新登录。');
       await refresh();
     } catch (reason) { reportError(reason); }
     finally { setPasswordBusy(false); }
   };
 
   return (
-    <section className="settings-card settings-card--wide account-panel" aria-describedby={statusId}>
+    <section className="settings-section account-panel" aria-describedby={statusId}>
       <div className="settings-card__title">
-        <div><h2>账号与设备</h2><p>账号：{username ?? '本机用户'}</p></div>
+        <div><h2>账号与设备</h2><p className="account-identity"><span className="account-identity__username">账号：{username ?? '当前用户'}</span>{session?.user.role === 'admin' ? <span className="role-label">管理员</span> : null}</p></div>
         <ShieldCheck />
       </div>
       <div id={statusId} aria-live="polite">
@@ -127,10 +127,10 @@ export function AccountPanel() {
       </div>
       {session ? (
         <p className="account-session">
-          当前设备：<strong>{session.deviceName}</strong> · 会话到期 {formatTime(session.expiresAt)}
+          当前设备：<strong>{session.deviceName}</strong> · 登录有效期至 {formatTime(session.expiresAt)}
         </p>
       ) : (
-        <p className="account-session">离线使用中，联网并重新验证会话后可刷新设备列表。</p>
+        <p className="account-session">当前无法联网。恢复网络并重新登录后，可查看设备列表。</p>
       )}
       <div className="device-list" aria-busy={loading}>
         {devices.map((device) => (
@@ -165,7 +165,7 @@ export function AccountPanel() {
         <button className="button button--danger-ghost" type="button" onClick={() => void runtime.logout()}><LogOut size={17} />退出当前设备</button>
       </div>
       <form className="password-form" onSubmit={changePassword}>
-        <div className="settings-card__title"><div><h3>修改密码</h3><p>修改后当前设备继续登录，其他设备需要重新认证。</p></div><KeyRound /></div>
+        <div className="settings-card__title"><div><h3>修改密码</h3><p>修改后当前设备继续使用，其他设备需要重新登录。</p></div><KeyRound /></div>
         <div className="form-grid">
           <label className="field"><span>当前密码</span><input type="password" autoComplete="current-password" minLength={12} maxLength={128} required value={passwords.current} onChange={(event) => setPasswords({ ...passwords, current: event.target.value })} /></label>
           <label className="field"><span>新密码</span><input type="password" autoComplete="new-password" minLength={12} maxLength={128} required value={passwords.next} onChange={(event) => setPasswords({ ...passwords, next: event.target.value })} /></label>

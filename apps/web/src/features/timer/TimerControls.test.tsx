@@ -51,9 +51,15 @@ describe('timer controls', () => {
     expect(screen.queryByRole('button', { name: '暂停计时器' })).toBeNull();
   });
 
-  it.each(['starting', 'pausing', 'resuming', 'completing', 'exiting'] as const)(
+  it.each([
+    ['starting', '正在开始'],
+    ['pausing', '正在暂停'],
+    ['resuming', '正在继续'],
+    ['completing', '正在确认完成'],
+    ['exiting', '正在退出'],
+  ] as const)(
     'disables duplicate controls while %s',
-    (state) => {
+    (state, label) => {
       render(<TimerControls
         state={state}
         onPause={vi.fn()}
@@ -62,7 +68,7 @@ describe('timer controls', () => {
       />);
       for (const button of screen.queryAllByRole('button'))
         expect(button).toHaveProperty('disabled', true);
-      expect(screen.getByRole('status').textContent).toContain('等待同步');
+      expect(screen.getByRole('status').textContent).toContain(label);
     },
   );
 
@@ -146,7 +152,7 @@ describe('timer controls', () => {
     expect(screen.getByRole('dialog', { name: '提前退出' })).toBeTruthy();
     await act(async () => pending.reject(new Error('网络暂时不可用')));
     expect((await screen.findByRole('alert')).textContent)
-      .toContain('网络暂时不可用');
+      .toContain('计时操作暂时无法完成，请重试。');
     expect(screen.getByRole('dialog', { name: '提前退出' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '确认退出' }))
       .toHaveProperty('disabled', false);

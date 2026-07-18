@@ -12,11 +12,11 @@ const EXIT_REASONS = [
 ] as const;
 
 const PENDING_LABELS: Partial<Record<TimerViewState, string>> = {
-  starting: '正在开始，等待同步',
-  pausing: '正在暂停，等待同步',
-  resuming: '正在继续，等待同步',
-  completing: '正在确认完成，等待同步',
-  exiting: '正在退出，等待同步',
+  starting: '正在开始…',
+  pausing: '正在暂停…',
+  resuming: '正在继续…',
+  completing: '正在确认完成…',
+  exiting: '正在退出…',
 };
 
 type LocalBusyState = 'pausing' | 'resuming' | 'exiting';
@@ -27,8 +27,8 @@ const LOCAL_BUSY_LABELS: Record<LocalBusyState, string> = {
   exiting: '正在退出…',
 };
 
-function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : '计时器操作失败，请重试';
+function errorMessage(): string {
+  return '计时操作暂时无法完成，请重试。';
 }
 
 export function TimerControls({
@@ -79,8 +79,8 @@ export function TimerControls({
       await action();
       busySettledRef.current = true;
       if (stateRef.current !== busyOriginRef.current) clearBusy();
-    } catch (reason) {
-      setError(errorMessage(reason));
+    } catch {
+      setError(errorMessage());
       clearBusy();
     }
   };
@@ -153,7 +153,7 @@ export function TimerControls({
       onClose={() => { if (!busyRef.current) setExitOpen(false); }}
     >
       <form onSubmit={submitExit}>
-        <p className="dialog-copy">选择退出原因。服务器会生成一条中断的专注记录。</p>
+        <p className="dialog-copy">选择退出原因，退出后会保留这次专注记录。</p>
         <div className="reason-list">
           {EXIT_REASONS.map((reason) => <label
             className={selectedReason === reason ? 'reason reason--selected' : 'reason'}
@@ -182,7 +182,7 @@ export function TimerControls({
         {error ? <p className="form-error" role="alert">{error}</p> : null}
         <div className="form-actions">
           <button className="button button--ghost" type="button" disabled={busy !== null} onClick={() => setExitOpen(false)}>取消</button>
-          <button className="button button--danger-ghost" type="submit" disabled={busy !== null}>
+          <button className="button button--danger" type="submit" disabled={busy !== null}>
             {busy === 'exiting' ? '正在退出…' : '确认退出'}
           </button>
           {busy === 'exiting' ? <span role="status" className="sr-only">

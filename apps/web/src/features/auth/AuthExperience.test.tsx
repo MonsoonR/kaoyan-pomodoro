@@ -45,6 +45,16 @@ describe('authentication experience', () => {
     return { runtime, api, database, resumeAfterAuthentication };
   }
 
+  it('uses the official logo on the login screen', async () => {
+    const { runtime } = setup();
+    const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
+    await screen.findByLabelText('用户名');
+    const logo = document.querySelector<HTMLImageElement>('.login-art .brand__mark');
+    expect(logo?.getAttribute('src')).toBe('/logo.svg');
+    view.unmount();
+    await runtime.closed();
+  });
+
   it.each([
     [new SyncClientError('INVALID_CREDENTIALS', 'secret'), '用户名或密码错误'],
     [new RateLimitedError(), '登录尝试过于频繁'],
@@ -81,7 +91,9 @@ describe('authentication experience', () => {
     const { runtime, api, resumeAfterAuthentication } = setup();
     const user = userEvent.setup();
     const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
-    expect(await screen.findByRole('heading', { name: '创建你的学习空间' })).toBeTruthy();
+    expect(await screen.findByRole('heading', {
+      name: /^用一枚邀请，\s*开启备考节奏。$/,
+    })).toBeTruthy();
     expect(document.body.textContent).not.toContain(token);
     await user.type(screen.getByLabelText('用户名'), 'new-user');
     await user.type(screen.getByLabelText(/^密码/), 'secure password 123');
@@ -95,6 +107,22 @@ describe('authentication experience', () => {
       'secure password 123',
     );
     expect(resumeAfterAuthentication).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await runtime.closed();
+  });
+
+  it('offers a discoverable invite entry without exposing the token', async () => {
+    const token = 'B'.repeat(43);
+    const { runtime } = setup();
+    const user = userEvent.setup();
+    const view = render(<RuntimeProvider runtime={runtime}><AuthExperience><p>应用内容</p></AuthExperience></RuntimeProvider>);
+    await user.click(await screen.findByRole('button', { name: '使用邀请码注册' }));
+    await user.type(screen.getByLabelText('邀请链接或邀请码'), `https://example.test/#/invite/${token}`);
+    await user.click(screen.getByRole('button', { name: '继续注册' }));
+    expect(await screen.findByRole('heading', {
+      name: /^用一枚邀请，\s*开启备考节奏。$/,
+    })).toBeTruthy();
+    expect(document.body.textContent).not.toContain(token);
     view.unmount();
     await runtime.closed();
   });

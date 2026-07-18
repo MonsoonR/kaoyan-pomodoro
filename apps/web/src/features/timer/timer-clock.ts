@@ -77,8 +77,8 @@ export function shouldAutoCompleteTimer(
 }
 
 export function calibrationLabel(clock: EstimatedServerClock): string {
-  if (clock.calibration === 'calibrated') return '已按服务器时间校准';
-  if (clock.calibration === 'missing') return '等待时间校准 · 本机估算';
-  if (clock.calibration === 'stale') return '校准已过期 · 本机估算';
-  return '网络时延较高 · 本机估算';
+  if (clock.calibration === 'calibrated') return '计时准确';
+  if (clock.calibration === 'missing') return '正在确认时间';
+  if (clock.calibration === 'stale') return '正在重新确认时间';
+  return '网络较慢，时间为暂时显示';
 }

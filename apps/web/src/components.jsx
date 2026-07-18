@@ -78,7 +78,13 @@ export function TaskForm({ kind, initial, defaultPreset, onCancel, onSave }) {
     try {
       await onSave({ title, subject, target: Number(target), preset });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '保存失败');
+      const message = reason instanceof Error ? reason.message : '';
+      setError([
+        '任务名称需为 1–60 个字符',
+        '预计番茄数需为 1–12',
+        '请选择科目',
+        '请选择计时模式',
+      ].includes(message) ? message : '暂时无法保存，请稍后重试。');
     }
   };
   return (
