@@ -67,6 +67,13 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+const PAGE_DATE_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  weekday: 'long',
+});
+
 function PageHeader({ title, description, action }: {
   title: string;
   description: string;
@@ -239,15 +246,23 @@ function SettingsPage({ settings, settingsId, conflicts, onSave, toast }: {
     <PageHeader title="设置" description="按自己的节奏调整专注、休息和提醒。" />
     <form className="settings-grid" onSubmit={submit}>
       <section className="settings-card settings-card--wide settings-card--combined">
-        <div className="settings-section">
+        <div className="settings-section settings-section--timing">
           <div className="settings-card__title"><div><h2>学习与计时设置</h2><p>调整适合自己的专注与休息节奏。</p></div><SettingsIcon /></div>
-          <label className="field field--full"><span>默认计时模式</span><select value={draft.defaultPreset} onChange={(event) => change('defaultPreset', event.target.value)}>{Object.entries(PRESETS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-          <div className="form-grid">
-            <label className="field"><span>专注分钟</span><input type="number" min="1" max="180" value={draft.customFocusMinutes} onChange={(event) => change('customFocusMinutes', event.target.value)} /></label>
-            <label className="field"><span>短休息分钟</span><input type="number" min="1" max="60" value={draft.customShortBreakMinutes} onChange={(event) => change('customShortBreakMinutes', event.target.value)} /></label>
-            <label className="field"><span>长休息分钟</span><input type="number" min="1" max="120" value={draft.customLongBreakMinutes} onChange={(event) => change('customLongBreakMinutes', event.target.value)} /></label>
-            <label className="field"><span>长休息间隔</span><input type="number" min="1" max="12" value={draft.longBreakInterval} onChange={(event) => change('longBreakInterval', event.target.value)} /></label>
-          </div>
+          <fieldset className="settings-mode">
+            <legend>默认计时模式</legend>
+            <div className="settings-mode__options" role="radiogroup" aria-label="默认计时模式">
+              {Object.entries(PRESETS).map(([key, label]) => <button key={key} className={draft.defaultPreset === key ? 'settings-mode__option settings-mode__option--active' : 'settings-mode__option'} type="button" role="radio" aria-checked={draft.defaultPreset === key} onClick={() => change('defaultPreset', key)}>{label}</button>)}
+            </div>
+          </fieldset>
+          <fieldset className="settings-durations">
+            <legend>自定义时长</legend>
+            <div className="settings-durations__grid">
+              <label className="field"><span>专注分钟</span><input type="number" min="1" max="180" value={draft.customFocusMinutes} onChange={(event) => change('customFocusMinutes', event.target.value)} /></label>
+              <label className="field"><span>短休息分钟</span><input type="number" min="1" max="60" value={draft.customShortBreakMinutes} onChange={(event) => change('customShortBreakMinutes', event.target.value)} /></label>
+              <label className="field"><span>长休息分钟</span><input type="number" min="1" max="120" value={draft.customLongBreakMinutes} onChange={(event) => change('customLongBreakMinutes', event.target.value)} /></label>
+              <label className="field"><span>长休息间隔</span><input type="number" min="1" max="12" value={draft.longBreakInterval} onChange={(event) => change('longBreakInterval', event.target.value)} /></label>
+            </div>
+          </fieldset>
         </div>
         <div className="settings-section settings-section--reminders">
           <div className="settings-card__title"><div><h3>提醒设置</h3><p>选择计时结束时希望收到的提醒。</p></div><Focus /></div>
@@ -370,7 +385,7 @@ function AppContent() {
   let page: React.ReactNode;
 
   if (route === 'today') page = <section className="page">
-    <PageHeader title="今日任务" description="选好今天要做的事，然后一项一项完成。" action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加今日任务</button>} />
+    <PageHeader title="今日任务" description={PAGE_DATE_FORMATTER.format(new Date())} action={<button className="button button--primary" type="button" onClick={() => setEditor({ kind: 'daily', item: null })}><Plus size={17} />添加今日任务</button>} />
     <section className="panel today-board"><section className="today-section"><div className="section-title"><div><h2>今天的计划</h2><p>{todayTasks.length} 项任务 · 已完成 {summary.completed} 项</p></div></div>
         {visibleTimer ? <TimerEntry timerState={timerState} onOpen={() => go(`focus/${visibleTimer.dailyTaskId}`)} /> : null}
         {todayTasks.length ? <div className="task-list">{todayTasks.map((task) => <TaskRow key={task.id} task={task} startLabel={visibleTimer ? '查看当前计时器' : '开始专注'} onStart={() => openOrStartFocus(task)} onToggle={toggleDaily} onEdit={(item: DailyTask) => setEditor({ kind: 'daily', item })} onDelete={deleteDaily} onMove={moveDaily} />)}</div> : <Empty title="今天还没有任务" text="临时添加一个，或从长期任务库选择。" />}
@@ -394,8 +409,8 @@ function AppContent() {
   else if (route === 'records') {
     const sessions = data.focusSessions.filter((session) => getIsoDateKey(session.startedAt) === today);
     page = <section className="page"><PageHeader title="专注记录" description="回顾每一次专注，看看今天把时间花在了哪里。" />
-      <div className="record-summary"><div><Clock3 /><span>专注时长</span><strong>{formatDuration(summary.focusSeconds)}</strong></div><div><Focus /><span>完整番茄</span><strong>{summary.pomodoros} 个</strong></div></div>
-      <section className="panel"><div className="section-title"><div><h2>今日时间线</h2><p>{sessions.length} 条记录</p></div></div>{sessions.length ? <div className="record-list">{sessions.map((session) => <article className="record-row" key={session.id}><i className={`record-icon record-icon--${session.result}`}><Clock3 size={18} /></i><div className="record-row__main"><div><strong>{session.result === 'completed' ? '完成专注' : session.result === 'interrupted' ? '专注中断' : '提前结束'}</strong><SubjectBadge subject={session.subject} /></div><h3>{session.taskTitle}</h3>{session.interruptionReason ? <p>原因：{session.interruptionReason}</p> : null}</div><div className="record-row__time"><strong>{formatDuration(session.effectiveSeconds)}</strong><span>{formatTime(session.startedAt)}–{formatTime(session.endedAt)}</span></div></article>)}</div> : <Empty title="今天还没有专注记录" text="完成一次专注后，记录会出现在这里。" />}</section>
+      <section className="panel records-panel"><div className="record-summary"><div><Clock3 /><span>专注时长</span><strong>{formatDuration(summary.focusSeconds)}</strong></div><div><Focus /><span>完整番茄</span><strong>{summary.pomodoros} 个</strong></div></div>
+        <div className="section-title"><div><h2>今日时间线</h2><p>{sessions.length} 条记录</p></div></div>{sessions.length ? <div className="record-list">{sessions.map((session) => <article className="record-row" key={session.id}><i className={`record-icon record-icon--${session.result}`}><Clock3 size={18} /></i><div className="record-row__main"><div><strong>{session.result === 'completed' ? '完成专注' : session.result === 'interrupted' ? '专注中断' : '提前结束'}</strong><SubjectBadge subject={session.subject} /></div><h3>{session.taskTitle}</h3>{session.interruptionReason ? <p>原因：{session.interruptionReason}</p> : null}</div><div className="record-row__time"><strong>{formatDuration(session.effectiveSeconds)}</strong><span>{formatTime(session.startedAt)}–{formatTime(session.endedAt)}</span></div></article>)}</div> : <Empty title="今天还没有专注记录" text="完成一次专注后，记录会出现在这里。" />}</section>
     </section>;
   } else if (route === 'settings') page = <SettingsPage settings={settings} settingsId={settings?.id ?? null} conflicts={data.conflicts} toast={toast} onSave={(id, patch) => queue ? run(() => queue.updateSettings(id, patch), '设置已保存') : Promise.reject(new Error('暂时无法保存，请稍后再试'))} />;
   else if (route === 'invites' && runtime.getSnapshot().session?.user.role === 'admin') page = <InvitationManagement />;

@@ -8,6 +8,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { AppSelect } from './components/AppSelect';
 import { PRESETS, SUBJECTS } from './model.js';
 
 export function Modal({ open, title, children, onClose, size = 'medium', dismissible = true }) {
@@ -91,9 +92,9 @@ export function TaskForm({ kind, initial, defaultPreset, onCancel, onSave }) {
     <form className="task-form" onSubmit={submit}>
       <label className="field field--full"><span>任务名称</span><input autoFocus maxLength="60" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={kind === 'template' ? '例如：高数极限基础题' : '例如：完成高数练习 30 道'} /></label>
       <div className="form-grid">
-        <label className="field"><span>科目</span><select value={subject} onChange={(e) => setSubject(e.target.value)}>{Object.entries(SUBJECTS).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
+        <AppSelect label="科目" value={subject} onChange={setSubject} options={Object.entries(SUBJECTS).map(([value, label]) => ({ value, label }))} />
         <label className="field"><span>预计番茄数</span><input type="number" min="1" max="12" value={target} onChange={(e) => setTarget(e.target.value)} /></label>
-        <label className="field field--full"><span>计时模式</span><select value={preset} onChange={(e) => setPreset(e.target.value)}>{Object.entries(PRESETS).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
+        <AppSelect className="field--full" label="计时模式" value={preset} onChange={setPreset} options={Object.entries(PRESETS).map(([value, label]) => ({ value, label }))} />
       </div>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <div className="form-actions"><button className="button button--ghost" type="button" onClick={onCancel}>取消</button><button className="button button--primary" type="submit">保存任务</button></div>

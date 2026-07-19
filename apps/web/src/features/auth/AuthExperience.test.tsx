@@ -51,6 +51,10 @@ describe('authentication experience', () => {
     await screen.findByLabelText('用户名');
     const logo = document.querySelector<HTMLImageElement>('.login-art .brand__mark');
     expect(logo?.getAttribute('src')).toBe('/logo.svg');
+    expect(screen.getByText('一事')).toBeTruthy();
+    expect(screen.getByText('此刻，只做一事。')).toBeTruthy();
+    expect(document.body.textContent).not.toContain('考研番茄钟');
+    expect(document.body.textContent).not.toContain('FOCUS · REST · RETURN');
     view.unmount();
     await runtime.closed();
   });

@@ -5,6 +5,7 @@ import './styles.css';
 import './task8.css';
 import './design-system.css';
 import './editorial.css';
+import './one-thing.css';
 import { PwaUpdatePrompt } from './pwa/PwaUpdatePrompt';
 
 globalThis.React = React;

@@ -155,11 +155,26 @@ async function runAccountInitialization() {
   });
 }
 
+async function runLocalPasswordReset(username) {
+  await mkdir(localDataDirectory, { recursive: true });
+  process.stdout.write(`[local] Database: ${databasePath}\n`);
+  await runPnpm([
+    '--filter',
+    '@kaoyan/api',
+    'account:reset-password',
+    '--username',
+    username,
+  ], {
+    env: { ...process.env, DATABASE_PATH: databasePath },
+    interactive: true,
+  });
+}
+
 async function runDevelopmentServers() {
   await mkdir(localDataDirectory, { recursive: true });
   await Promise.all([
     checkPortAvailable({ port: 3000, host: '127.0.0.1', service: 'API' }),
-    checkPortAvailable({ port: 5173, host: '0.0.0.0', service: 'Web' }),
+    checkPortAvailable({ port: 5273, host: '0.0.0.0', service: 'Web' }),
   ]);
 
   process.stdout.write(`[local] Database: ${databasePath}\n`);
@@ -179,7 +194,7 @@ async function runDevelopmentServers() {
       ],
       env: {
         ...process.env,
-        APP_ORIGIN: 'http://localhost:5173',
+        APP_ORIGIN: 'http://localhost:5273',
         DATABASE_PATH: databasePath,
         HOST: '127.0.0.1',
         PORT: '3000',
@@ -196,7 +211,7 @@ async function runDevelopmentServers() {
         '--host',
         '0.0.0.0',
         '--port',
-        '5173',
+        '5273',
         '--strictPort',
       ],
       env: {
@@ -206,7 +221,7 @@ async function runDevelopmentServers() {
     }),
   ];
 
-  process.stdout.write('[local] Web: http://localhost:5173\n');
+  process.stdout.write('[local] Web: http://localhost:5273\n');
   process.stdout.write('[local] API: http://127.0.0.1:3000\n');
 
   let shuttingDown = false;
@@ -223,7 +238,7 @@ async function runDevelopmentServers() {
     try {
       await Promise.all([
         checkPortAvailable({ port: 3000, host: '127.0.0.1', service: 'API' }),
-        checkPortAvailable({ port: 5173, host: '0.0.0.0', service: 'Web' }),
+        checkPortAvailable({ port: 5273, host: '0.0.0.0', service: 'Web' }),
       ]);
     } catch (error) {
       process.stderr.write(`[local] Shutdown incomplete: ${error.message}\n`);
@@ -277,7 +292,18 @@ async function main() {
     await runAccountInitialization();
     return;
   }
-  throw new Error('Usage: node scripts/dev-local.mjs [--init-account]');
+  if (
+    args.length === 3 &&
+    args[0] === '--reset-password' &&
+    args[1] === '--username' &&
+    args[2]
+  ) {
+    await runLocalPasswordReset(args[2]);
+    return;
+  }
+  throw new Error(
+    'Usage: node scripts/dev-local.mjs [--init-account | --reset-password --username <username>]',
+  );
 }
 
 main().catch((error) => {

@@ -6,6 +6,8 @@ describe('production PWA policy', () => {
   it('defines an installable Chinese standalone manifest', () => {
     expect(pwaOptions.includeAssets).toContain('logo.svg');
     expect(pwaOptions.manifest).toMatchObject({
+      name: '一事',
+      short_name: '一事',
       lang: 'zh-CN',
       start_url: '/',
       scope: '/',

@@ -2,6 +2,7 @@ import type { DailyTask } from '@kaoyan/contracts';
 import { ArrowRight, CalendarDays, ListTodo, Play } from 'lucide-react';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { PRESETS } from '../../model.js';
+import { AppSelect } from '../../components/AppSelect';
 import type { TimerStateSnapshot } from '../timer/use-timer-state';
 
 type Summary = {
@@ -109,12 +110,15 @@ export function FocusDashboard({
       <aside className="focus-context">
         <p className="section-kicker">当前任务</p>
         <h2>{displayTask?.title ?? '先安排今天的第一项任务'}</h2>
-        {availableTasks.length ? <label className="focus-context__select">
-          <span className="sr-only">选择今日任务</span>
-          <select value={selectedId} disabled={Boolean(timer)} onChange={(event) => setSelectedId(event.target.value)}>
-            {availableTasks.map((task) => <option key={task.id} value={task.id}>{task.title}</option>)}
-          </select>
-        </label> : <p className="focus-context__empty">从长期任务库选择目标，或临时添加一项任务。</p>}
+        {availableTasks.length ? <AppSelect
+          className="focus-context__select"
+          label="选择今日任务"
+          labelClassName="sr-only"
+          value={selectedId}
+          disabled={Boolean(timer)}
+          onChange={setSelectedId}
+          options={availableTasks.map((task) => ({ value: task.id, label: task.title }))}
+        /> : <p className="focus-context__empty">从长期任务库选择目标，或临时添加一项任务。</p>}
         <dl className="focus-context__details">
           <div><dt>今日任务</dt><dd>{summary.completed} / {summary.total}</dd></div>
           <div><dt>计时模式</dt><dd>{displayTask ? PRESETS[displayTask.timerPreset] : '—'}</dd></div>
