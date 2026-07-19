@@ -16,10 +16,10 @@ RUN pnpm --filter @kaoyan/contracts build && pnpm --filter @kaoyan/web build
 FROM node:22-bookworm-slim AS runtime
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
-LABEL org.opencontainers.image.title="Kaoyan Pomodoro Web" \
+LABEL org.opencontainers.image.title="OneThing Web" \
       org.opencontainers.image.revision=$VCS_REF \
       org.opencontainers.image.created=$BUILD_DATE \
-      org.opencontainers.image.source="https://github.com/MonsoonR/kaoyan-pomodoro"
+      org.opencontainers.image.source="https://github.com/MonsoonR/onething"
 ENV NODE_ENV=production PORT=8080
 RUN groupadd --gid 10002 web && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin web
 WORKDIR /app

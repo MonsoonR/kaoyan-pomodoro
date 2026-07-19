@@ -16,10 +16,10 @@ RUN pnpm --filter @kaoyan/contracts build && pnpm --filter @kaoyan/api build && 
 FROM node:22-bookworm-slim AS runtime
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
-LABEL org.opencontainers.image.title="Kaoyan Pomodoro API" \
+LABEL org.opencontainers.image.title="OneThing API" \
       org.opencontainers.image.revision=$VCS_REF \
       org.opencontainers.image.created=$BUILD_DATE \
-      org.opencontainers.image.source="https://github.com/MonsoonR/kaoyan-pomodoro"
+      org.opencontainers.image.source="https://github.com/MonsoonR/onething"
 ENV NODE_ENV=production DATABASE_PATH=/var/lib/kaoyan/kaoyan.sqlite HOST=0.0.0.0 PORT=3000 TRUST_PROXY_HOPS=1
 RUN groupadd --gid 10001 kaoyan && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin kaoyan
 WORKDIR /app
