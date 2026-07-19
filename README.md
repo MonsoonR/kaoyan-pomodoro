@@ -1,6 +1,8 @@
 # 一事
 
-一个支持离线使用和多设备同步的专注学习网页应用，把“长期任务库、今日待办、番茄专注、完成确认、每日复盘”串成一个简单闭环。此刻，只做一事。
+> 此刻，只做一事。
+
+一事（英文名 **OneThing**）是一个支持离线使用和多设备同步的专注学习网页应用，把“长期任务库、今日待办、番茄专注、完成确认、每日复盘”串成一个简单闭环。
 
 ## 功能
 
@@ -21,6 +23,8 @@
 需要 Node.js 22 和 pnpm 10。
 
 ```bash
+git clone https://github.com/MonsoonR/onething.git
+cd onething
 pnpm install
 pnpm dev
 ```
@@ -43,7 +47,7 @@ pnpm dev:local
 
 ```bash
 pnpm build
-pnpm --filter @kaoyan/web preview
+pnpm --dir apps/web preview
 ```
 
 Web 与 API 分别构建；同步版不能只部署静态文件。

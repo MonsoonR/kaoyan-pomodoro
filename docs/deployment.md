@@ -1,4 +1,4 @@
-# 考研番茄钟生产部署与更新
+# 一事生产部署与更新
 
 当前生产环境是 Kubernetes。生产更新只通过 Kite 的 Kubectl Terminal 按本页流程执行；Docker Compose 仅用于本地集成测试和已停止的旧服务器短期回滚，不是生产更新目标。
 
