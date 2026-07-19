@@ -1,6 +1,6 @@
-# 考研番茄钟
+# 一事
 
-一个支持离线使用和多设备同步的考研复习网页应用，把“长期任务库、今日待办、番茄专注、完成确认、每日复盘”串成一个简单闭环。
+一个支持离线使用和多设备同步的专注学习网页应用，把“长期任务库、今日待办、番茄专注、完成确认、每日复盘”串成一个简单闭环。此刻，只做一事。
 
 ## 功能
 
@@ -37,7 +37,7 @@ pnpm local:account:init
 pnpm dev:local
 ```
 
-浏览器固定打开 <http://localhost:5173>。修改前端代码后 Vite 会自动热更新；修改 API 代码后 `tsx watch` 会自动重启 API。本地数据仅存放在项目的 `.local-data/`，不会使用生产数据库。按 `Ctrl+C` 会同时停止前后端。
+浏览器固定打开 <http://localhost:5273>。修改前端代码后 Vite 会自动热更新；修改 API 代码后 `tsx watch` 会自动重启 API。本地数据仅存放在项目的 `.local-data/`，不会使用生产数据库。按 `Ctrl+C` 会同时停止前后端。
 
 ## 生产构建
 
@@ -77,10 +77,10 @@ pnpm exec playwright install chromium
 
 `compose.yml` 与 Caddy 配置继续用于本地容器集成测试和已停止旧服务器的短期回滚参考，不是当前生产更新方式。
 
-初始化得到的原始账号是管理员。管理员登录后可在“邀请管理”创建一次性链接。按用户名安全重置密码：
+初始化得到的原始账号是管理员。管理员登录后可在“邀请管理”创建一次性链接。本地开发时按用户名安全重置密码：
 
 ```bash
-pnpm admin:reset-password --username <username>
+pnpm local:account:reset-password --username <username>
 ```
 
 密码会在终端中隐藏输入两次；命令不会接受密码参数，完成后该用户的已有会话全部失效，并要求下次登录后修改密码。

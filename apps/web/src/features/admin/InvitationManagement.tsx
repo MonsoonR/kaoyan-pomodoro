@@ -2,6 +2,7 @@ import type { Invitation } from '@kaoyan/contracts';
 import { Clipboard, Link2, Plus, ShieldCheck, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Modal } from '../../components.jsx';
+import { AppSelect } from '../../components/AppSelect';
 import { useRuntime } from '../../runtime/runtime-context';
 
 const STATUS_LABELS: Record<Invitation['status'], string> = {
@@ -10,6 +11,13 @@ const STATUS_LABELS: Record<Invitation['status'], string> = {
   expired: '已过期',
   revoked: '已撤销',
 };
+
+const EXPIRY_OPTIONS = [
+  { value: 1, label: '1 小时' },
+  { value: 24, label: '24 小时' },
+  { value: 168, label: '7 天' },
+  { value: 720, label: '30 天' },
+] as const;
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -74,7 +82,7 @@ export function InvitationManagement() {
       <section className="invite-section invite-create">
         <div className="section-title"><div><h2>创建邀请</h2><p>链接成功使用一次后会立即失效。</p></div><ShieldCheck /></div>
         <div className="invite-create__controls">
-          <label className="field"><span>有效期</span><select value={expiresInHours} onChange={(event) => setExpiresInHours(Number(event.target.value))}><option value={1}>1 小时</option><option value={24}>24 小时</option><option value={168}>7 天</option><option value={720}>30 天</option></select></label>
+          <AppSelect label="有效期" value={expiresInHours} onChange={setExpiresInHours} options={EXPIRY_OPTIONS} />
           <button className="button button--primary" type="button" disabled={busy} onClick={() => void create()}><Plus size={17} />{busy ? '正在创建…' : '创建邀请链接'}</button>
         </div>
         {error ? <p className="form-error" role="alert">{error}</p> : null}

@@ -40,14 +40,6 @@ button.brand:hover {
   white-space: nowrap;
 }
 
-.brand small {
-  margin-top: 5px;
-  color: var(--muted);
-  font-family: var(--font-numeric);
-  font-size: 10px;
-  letter-spacing: .09em;
-}
-
 .side-nav {
   margin-top: 28px;
   gap: 4px;
@@ -256,10 +248,6 @@ button.brand:hover {
   cursor: default;
 }
 
-.brand--inverse small {
-  color: #bdcbbd;
-}
-
 .login-art__orbit {
   width: min(32vw, 370px);
   min-width: 280px;
@@ -299,13 +287,6 @@ button.brand:hover {
   font-size: 28px;
   font-weight: 600;
   line-height: 1.55;
-}
-
-.login-art > small {
-  margin-top: 18px;
-  color: #bdcbbd;
-  font-family: var(--font-numeric);
-  letter-spacing: .18em;
 }
 
 .login-panel {
@@ -532,26 +513,9 @@ button.brand:hover {
   line-height: 1.45;
 }
 
-.focus-context__select select {
+.focus-context__select {
   width: 100%;
-  min-height: 44px;
   margin-top: 17px;
-  padding: 0 42px 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  color: var(--ink);
-  background-color: #fff;
-  font-size: 15px;
-}
-
-.focus-context__select select:hover {
-  border-color: #9fa99f;
-}
-
-.focus-context__select select:focus {
-  border-color: var(--moss);
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(62, 103, 81, .13);
 }
 
 .focus-context__empty {
@@ -663,14 +627,15 @@ button.brand:hover {
 }
 
 .record-summary {
+  margin: 0;
   grid-template-columns: repeat(2, 1fr);
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  border: 0;
   gap: 0;
 }
 
 .record-summary > div {
-  min-height: 110px;
+  min-height: 102px;
+  padding: 18px 20px;
   border: 0;
   border-right: 1px solid var(--line);
   border-radius: 0;
@@ -682,6 +647,10 @@ button.brand:hover {
   border-right: 0;
 }
 
+.record-summary + .panel {
+  margin-top: 0;
+}
+
 .record-summary strong,
 .timer-entry__clock {
   font-family: var(--font-numeric);
@@ -690,6 +659,103 @@ button.brand:hover {
 
 .settings-grid {
   gap: 16px;
+}
+
+.settings-section--timing {
+  display: grid;
+  gap: 24px;
+}
+
+.settings-mode,
+.settings-durations {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-mode legend,
+.settings-durations legend {
+  margin-bottom: 10px;
+  padding: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.settings-mode__options {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-mode__option {
+  min-height: 52px;
+  padding: 0 13px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.settings-mode__option:last-child {
+  border-right: 0;
+}
+
+.settings-mode__option:hover {
+  color: var(--moss);
+  background: rgba(36, 75, 60, .045);
+}
+
+.settings-mode__option--active {
+  color: var(--moss);
+  background: var(--moss-soft);
+  box-shadow: inset 0 -2px 0 var(--moss);
+}
+
+.settings-durations__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+}
+
+.settings-durations__grid .field {
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-durations__grid .field > span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-durations__grid .field input {
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-family: var(--font-numeric);
+  font-size: 21px;
+  line-height: 1;
+}
+
+.settings-durations__grid .field input:hover {
+  border: 0;
+}
+
+.settings-durations__grid .field input:focus {
+  border: 0;
+  outline: none;
+  box-shadow: inset 0 -2px 0 var(--moss);
 }
 
 .settings-card {
@@ -1358,11 +1424,6 @@ button.brand:hover {
     font-size: 23px;
   }
 
-  .login-art > small {
-    position: relative;
-    z-index: 1;
-  }
-
   .login-panel {
     min-height: auto;
     padding: 44px 28px;
@@ -1379,6 +1440,10 @@ button.brand:hover {
 
   .record-summary > div:last-child {
     border-bottom: 0;
+  }
+
+  .settings-durations__grid {
+    grid-template-columns: 1fr;
   }
 
   .record-row {
@@ -1429,8 +1494,7 @@ button.brand:hover {
   }
 
   .login-art__orbit,
-  .login-art blockquote,
-  .login-art > small {
+  .login-art blockquote {
     display: none;
   }
 

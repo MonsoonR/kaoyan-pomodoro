@@ -83,7 +83,7 @@ function LoginScreen() {
   return (
     <AuthScaffold>
       <section className="login-card" aria-labelledby="login-title">
-        <p className="login-kicker">考研番茄钟 / STUDY WITH RHYTHM</p>
+        <p className="login-kicker">此刻，只做一事。</p>
         <h1 id="login-title">把今天的每一段，<br />交给专注。</h1>
         <p>登录后，可在自己的设备上查看学习任务和记录。</p>
         {firstLoginOffline ? (
@@ -105,7 +105,6 @@ function AuthScaffold({ children }: { children: ReactNode }) {
       <Brand inverse />
       <div className="login-art__orbit"><span>25:00</span></div>
       <blockquote>不是冲刺的喧闹，<br />是每天都能抵达的一小段。</blockquote>
-      <small>FOCUS · REST · RETURN</small>
     </section>
     <section className="login-panel">{children}</section>
   </main>;
